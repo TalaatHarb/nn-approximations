@@ -12,7 +12,7 @@ public class BinaryStep implements UnaryOperator<Float> {
 
 	@Override
 	public Float apply(Float t) {
-		return t >= threshold ? 1.0f : 0.0f;
+		return t > threshold ? 1.0f : 0.0f;
 	}
 
 }
