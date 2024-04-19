@@ -3,6 +3,10 @@ package net.talaatharb.nn.structures;
 import java.util.Random;
 import java.util.function.UnaryOperator;
 
+import lombok.ToString;
+import net.talaatharb.nn.functions.Functions;
+
+@ToString
 public class NeuronLayer implements UnaryOperator<float[]> {
 
 	private static final Random RANDOM = new Random();
@@ -20,20 +24,19 @@ public class NeuronLayer implements UnaryOperator<float[]> {
 	private final int outputSize;
 
 	public NeuronLayer(float[][] layerWeights) {
-		outputSize = layerWeights.length;
-		inputSize = layerWeights[0].length;
-		neurons = new Neuron[outputSize];
-		for (int i = 0; i < outputSize; i++) {
-			neurons[i] = Neuron.defaultWithWeights(layerWeights[i]);
-		}
+		this(layerWeights, Functions.linearFunction());
 	}
 
 	public NeuronLayer(int inputSize, int outputSize) {
+		this(inputSize, outputSize, Functions.linearFunction());
+	}
+
+	public NeuronLayer(int inputSize, int outputSize, UnaryOperator<Float> function) {
 		this.inputSize = inputSize;
 		this.outputSize = outputSize;
 		neurons = new Neuron[outputSize];
 		for (int i = 0; i < outputSize; i++) {
-			neurons[i] = Neuron.defaultWithSize(inputSize);
+			neurons[i] = new Neuron(inputSize, function);
 		}
 	}
 

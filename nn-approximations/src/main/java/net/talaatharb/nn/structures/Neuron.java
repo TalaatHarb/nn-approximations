@@ -3,28 +3,33 @@ package net.talaatharb.nn.structures;
 import java.util.function.Function;
 import java.util.function.UnaryOperator;
 
+import lombok.ToString;
 import net.talaatharb.nn.functions.Functions;
 
+@ToString
 public class Neuron implements Function<float[], Float> {
 
 	private final float[] weights;
 	private final UnaryOperator<Float> function;
 
 	public Neuron(int n) {
-		if (n <= 0) {
-			throw new IllegalArgumentException("Neurons need positive size");
-		}
-		weights = new float[n + 1];
-		function = Functions.linearFunction();
+		this(n, Functions.linearFunction());
 	}
 
 	public Neuron(float[] weights) {
-		this.weights = weights;
-		function = Functions.linearFunction();
+		this(weights, Functions.linearFunction());
 	}
 
 	public Neuron(float[] weights, UnaryOperator<Float> function) {
 		this.weights = weights;
+		this.function = function;
+	}
+
+	public Neuron(int inputSize, UnaryOperator<Float> function) {
+		if (inputSize <= 0) {
+			throw new IllegalArgumentException("Neurons need positive size");
+		}
+		weights = new float[inputSize + 1];
 		this.function = function;
 	}
 
