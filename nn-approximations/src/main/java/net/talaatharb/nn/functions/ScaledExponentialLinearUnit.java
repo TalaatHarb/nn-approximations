@@ -1,8 +1,6 @@
 package net.talaatharb.nn.functions;
 
-import java.util.function.UnaryOperator;
-
-public class ScaledExponentialLinearUnit implements UnaryOperator<Float> {
+public class ScaledExponentialLinearUnit implements ActivationFunction {
 
 	private float alpha;
 
@@ -13,6 +11,11 @@ public class ScaledExponentialLinearUnit implements UnaryOperator<Float> {
 	@Override
 	public Float apply(Float t) {
 		return t > 0 ? t : (float) (alpha * (Math.exp(t) - 1));
+	}
+
+	@Override
+	public float numericalDervative(float input, float output) {
+		return input > 0 ? 1 : (float) (alpha * Math.exp(input));
 	}
 
 }

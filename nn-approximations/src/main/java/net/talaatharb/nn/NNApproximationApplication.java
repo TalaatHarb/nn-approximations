@@ -8,6 +8,8 @@ import net.talaatharb.nn.structures.FeedForwardNN;
 
 @Slf4j
 public class NNApproximationApplication {
+	private static final String LINE = "------------";
+
 	public static void main(String[] args) {
 		log.info("Application Started");
 		final int[] binaryShape = new int[] { 2, 1 };
@@ -67,16 +69,27 @@ public class NNApproximationApplication {
 		printTruthTableBinary(nandNetwork, "NAND");
 		printTruthTableBinary(xnorNetwork, "XNOR");
 		printTruthTableBinary(xorNetwork, "XOR");
+		printTruthTableUnary(notNetwork, "NOT");
 	}
 
 	static final void printTruthTableBinary(FeedForwardNN network, String symbol) {
 		final var inputs = new float[][] { new float[] { 0, 0 }, new float[] { 0, 1 }, new float[] { 1, 0 },
 				new float[] { 1, 1 } };
-		log.info("------------");
+		log.info(LINE);
 		log.info(" a | b |" + symbol);
 		for (final float[] input : inputs) {
 			log.info(input[0] + "|" + input[1] + "|" + network.apply(input)[0]);
 		}
-		log.info("------------");
+		log.info(LINE);
+	}
+
+	static final void printTruthTableUnary(FeedForwardNN network, String symbol) {
+		final var inputs = new float[][] { new float[] { 0.0f }, new float[] { 1.0f } };
+		log.info(LINE);
+		log.info(" a |" + symbol);
+		for (final float[] input : inputs) {
+			log.info(input[0] + "|" + network.apply(input)[0]);
+		}
+		log.info(LINE);
 	}
 }

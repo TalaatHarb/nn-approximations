@@ -1,12 +1,18 @@
 package net.talaatharb.nn.functions;
 
-import java.util.function.UnaryOperator;
-
-public class ReLU implements UnaryOperator<Float> {
+public class ReLU implements ActivationFunction {
 
 	@Override
 	public Float apply(Float input) {
 		return Math.max(0, input);
+	}
+
+	@Override
+	public float numericalDervative(float input, float output) {
+		if (input == 0) {
+			return Float.NaN;
+		}
+		return input > 0 ? 1 : 0.0f;
 	}
 
 }

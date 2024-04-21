@@ -1,8 +1,6 @@
 package net.talaatharb.nn.functions;
 
-import java.util.function.UnaryOperator;
-
-public class PiecewiseLinear implements UnaryOperator<Float> {
+public class PiecewiseLinear implements ActivationFunction {
 
 	private final float xMin;
 	private final float xMax;
@@ -27,6 +25,17 @@ public class PiecewiseLinear implements UnaryOperator<Float> {
 		}
 
 		return 1.0f;
+	}
+
+	@Override
+	public float numericalDervative(float input, float output) {
+		if (input == xMax || input == xMin) {
+			return Float.NaN;
+		}
+		if (input > xMin && input < xMax) {
+			return m;
+		}
+		return 0;
 	}
 
 }

@@ -1,8 +1,6 @@
 package net.talaatharb.nn.functions;
 
-import java.util.function.UnaryOperator;
-
-public class ParametricReLU implements UnaryOperator<Float> {
+public class ParametricReLU implements ActivationFunction {
 
 	private final float alpha;
 
@@ -13,6 +11,15 @@ public class ParametricReLU implements UnaryOperator<Float> {
 	@Override
 	public Float apply(Float input) {
 		return input > 0 ? input : alpha * input;
+	}
+
+	@Override
+	public float numericalDervative(float input, float output) {
+		if (input == 0) {
+			return Float.NaN;
+		}
+
+		return input > 0 ? 1 : alpha;
 	}
 
 }

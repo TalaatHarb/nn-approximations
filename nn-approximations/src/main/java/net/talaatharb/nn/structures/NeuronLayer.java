@@ -4,6 +4,7 @@ import java.util.Random;
 import java.util.function.UnaryOperator;
 
 import lombok.ToString;
+import net.talaatharb.nn.functions.ActivationFunction;
 import net.talaatharb.nn.functions.Functions;
 
 @ToString
@@ -19,7 +20,7 @@ public class NeuronLayer implements UnaryOperator<float[]> {
 	}
 	private final int inputSize;
 
-	private final Neuron[] neurons;
+	private Neuron[] neurons;
 
 	private final int outputSize;
 
@@ -31,7 +32,7 @@ public class NeuronLayer implements UnaryOperator<float[]> {
 		this(inputSize, outputSize, Functions.linearFunction());
 	}
 
-	public NeuronLayer(int inputSize, int outputSize, UnaryOperator<Float> function) {
+	public NeuronLayer(int inputSize, int outputSize, ActivationFunction function) {
 		this.inputSize = inputSize;
 		this.outputSize = outputSize;
 		neurons = new Neuron[outputSize];
@@ -40,7 +41,7 @@ public class NeuronLayer implements UnaryOperator<float[]> {
 		}
 	}
 
-	public NeuronLayer(float[][] layerWeights, UnaryOperator<Float> function) {
+	public NeuronLayer(float[][] layerWeights, ActivationFunction function) {
 		outputSize = layerWeights.length;
 		inputSize = layerWeights[0].length;
 		neurons = new Neuron[outputSize];
@@ -90,6 +91,14 @@ public class NeuronLayer implements UnaryOperator<float[]> {
 			layerWeights[i] = neurons[i].weights();
 		}
 		return layerWeights;
+	}
+
+	public void switchFunction(ActivationFunction newFunction) {
+		final float[][] weights = weights();
+		neurons = new Neuron[outputSize];
+		for (int i = 0; i < outputSize; i++) {
+			neurons[i] = new Neuron(weights[i], newFunction);
+		}
 	}
 
 }

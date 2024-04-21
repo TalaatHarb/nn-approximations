@@ -1,14 +1,21 @@
 package net.talaatharb.nn.functions;
 
-import java.util.function.UnaryOperator;
-
-public class LeakyReLU implements UnaryOperator<Float> {
+public class LeakyReLU implements ActivationFunction {
 
 	private static final float ALPHA = 0.01f;
 
 	@Override
 	public Float apply(Float input) {
 		return input > 0 ? input : ALPHA * input;
+	}
+
+	@Override
+	public float numericalDervative(float input, float output) {
+		if (input == 0) {
+			return Float.NaN;
+		}
+
+		return input > 0 ? 1 : ALPHA;
 	}
 
 }

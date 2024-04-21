@@ -4,6 +4,7 @@ import java.util.List;
 import java.util.function.UnaryOperator;
 
 import lombok.ToString;
+import net.talaatharb.nn.functions.ActivationFunction;
 
 @ToString
 public class FeedForwardNN implements UnaryOperator<float[]> {
@@ -21,7 +22,7 @@ public class FeedForwardNN implements UnaryOperator<float[]> {
 		}
 	}
 
-	public FeedForwardNN(int[] shape, List<UnaryOperator<Float>> functions) {
+	public FeedForwardNN(int[] shape, List<ActivationFunction> functions) {
 		this.shape = shape;
 		depth = shape.length - 1;
 		layers = new NeuronLayer[depth];

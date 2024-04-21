@@ -12,23 +12,23 @@ public interface Functions {
 
 	Tanh TANH = new Tanh();
 
-	public static UnaryOperator<Float> linearFunction() {
+	public static ActivationFunction linearFunction() {
 		return LINEAR;
 	}
 
-	public static UnaryOperator<Float> stepWithThreshold(float threshold) {
+	public static ActivationFunction stepWithThreshold(float threshold) {
 		return new BinaryStep(threshold);
 	}
 
-	public static UnaryOperator<Float> piecewiseLinear(float xMin, float xMax) {
+	public static ActivationFunction piecewiseLinear(float xMin, float xMax) {
 		return new PiecewiseLinear(xMin, xMax);
 	}
 
-	public static UnaryOperator<Float> sigmoidFunction() {
+	public static ActivationFunction sigmoidFunction() {
 		return SIGMOID;
 	}
 
-	public static UnaryOperator<Float> tanhFunction() {
+	public static ActivationFunction tanhFunction() {
 		return TANH;
 	}
 
@@ -36,19 +36,19 @@ public interface Functions {
 		return RELU;
 	}
 
-	public static UnaryOperator<Float> leakyReLUFunction() {
+	public static ActivationFunction leakyReLUFunction() {
 		return LEAKY_RELU;
 	}
 
-	public static UnaryOperator<Float> parametricReLU(float alpha) {
+	public static ActivationFunction parametricReLU(float alpha) {
 		return new ParametricReLU(alpha);
 	}
 
-	public static UnaryOperator<Float> exponentialLinearUnitFunction() {
+	public static ActivationFunction exponentialLinearUnitFunction() {
 		return ELU;
 	}
 
-	public static UnaryOperator<Float> scaledExponentialLinearUnit(float alpha) {
+	public static ActivationFunction scaledExponentialLinearUnit(float alpha) {
 		return new ScaledExponentialLinearUnit(alpha);
 	}
 }

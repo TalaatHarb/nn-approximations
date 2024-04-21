@@ -1,16 +1,16 @@
 package net.talaatharb.nn.structures;
 
 import java.util.function.Function;
-import java.util.function.UnaryOperator;
 
 import lombok.ToString;
+import net.talaatharb.nn.functions.ActivationFunction;
 import net.talaatharb.nn.functions.Functions;
 
 @ToString
 public class Neuron implements Function<float[], Float> {
 
 	private final float[] weights;
-	private final UnaryOperator<Float> function;
+	private final ActivationFunction function;
 
 	public Neuron(int n) {
 		this(n, Functions.linearFunction());
@@ -20,12 +20,12 @@ public class Neuron implements Function<float[], Float> {
 		this(weights, Functions.linearFunction());
 	}
 
-	public Neuron(float[] weights, UnaryOperator<Float> function) {
+	public Neuron(float[] weights, ActivationFunction function) {
 		this.weights = weights;
 		this.function = function;
 	}
 
-	public Neuron(int inputSize, UnaryOperator<Float> function) {
+	public Neuron(int inputSize, ActivationFunction function) {
 		if (inputSize <= 0) {
 			throw new IllegalArgumentException("Neurons need positive size");
 		}

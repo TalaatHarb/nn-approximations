@@ -1,14 +1,17 @@
 package net.talaatharb.nn.functions;
 
-import java.util.function.UnaryOperator;
-
-public class ExponentialLinearUnit implements UnaryOperator<Float> {
+public class ExponentialLinearUnit implements ActivationFunction {
 
 	private static final float ALPHA = 1.0f;
 
 	@Override
-	public Float apply(Float t) {
-		return t > 0 ? t : (float) (ALPHA * (Math.exp(t) - 1));
+	public Float apply(Float input) {
+		return input > 0 ? input : (float) (ALPHA * (Math.exp(input) - 1));
+	}
+
+	@Override
+	public float numericalDervative(float input, float output) {
+		return input > 0 ? 1 : (float) (ALPHA * Math.exp(input));
 	}
 
 }
