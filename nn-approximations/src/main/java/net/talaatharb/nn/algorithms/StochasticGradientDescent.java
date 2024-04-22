@@ -72,7 +72,7 @@ public class StochasticGradientDescent implements TrainingAlgorithm {
 
 			}
 			epochError /= dataPointsSize;
-			log.info("Iteration: {}, error: {}", epoch + 1, epochError);
+			log.info("EPOCH: {}, error: {}", epoch + 1, epochError);
 			
 			if(epochError < threshold) break;
 
