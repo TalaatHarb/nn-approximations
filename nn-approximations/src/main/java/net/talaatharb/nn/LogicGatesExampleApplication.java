@@ -7,7 +7,7 @@ import net.talaatharb.nn.functions.Functions;
 import net.talaatharb.nn.structures.FeedForwardNN;
 
 @Slf4j
-public class NNApproximationApplication {
+public class LogicGatesExampleApplication {
 	private static final String LINE = "------------";
 
 	public static void main(String[] args) {

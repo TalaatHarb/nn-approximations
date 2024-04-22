@@ -2,6 +2,7 @@ package net.talaatharb.nn.structures;
 
 import java.util.function.Function;
 
+import lombok.Getter;
 import lombok.ToString;
 import net.talaatharb.nn.functions.ActivationFunction;
 import net.talaatharb.nn.functions.Functions;
@@ -10,7 +11,15 @@ import net.talaatharb.nn.functions.Functions;
 public class Neuron implements Function<float[], Float> {
 
 	private final float[] weights;
+
+	@Getter
 	private final ActivationFunction function;
+
+	@Getter
+	private float lastOutput;
+
+	@Getter
+	private float[] lastInput;
 
 	public Neuron(int n) {
 		this(n, Functions.linearFunction());
@@ -47,12 +56,14 @@ public class Neuron implements Function<float[], Float> {
 
 	@Override
 	public Float apply(float[] input) {
+		lastInput = input;
 		float sum = weights[0];
 		final int min = Math.min(input.length, weights.length - 1);
 		for (int i = 0; i < min; i++) {
 			sum += weights[i + 1] * input[i];
 		}
-		return function.apply(sum);
+		lastOutput = function.apply(sum);
+		return lastOutput;
 	}
 
 	public void updateWeights(float[] newWeights) {

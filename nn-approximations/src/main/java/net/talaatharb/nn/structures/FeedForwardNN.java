@@ -3,6 +3,7 @@ package net.talaatharb.nn.structures;
 import java.util.List;
 import java.util.function.UnaryOperator;
 
+import lombok.Getter;
 import lombok.ToString;
 import net.talaatharb.nn.functions.ActivationFunction;
 
@@ -10,7 +11,11 @@ import net.talaatharb.nn.functions.ActivationFunction;
 public class FeedForwardNN implements UnaryOperator<float[]> {
 
 	private final int[] shape;
+
+	@Getter
 	private final NeuronLayer[] layers;
+
+	@Getter
 	private final int depth;
 
 	public FeedForwardNN(int[] shape) {
@@ -59,6 +64,10 @@ public class FeedForwardNN implements UnaryOperator<float[]> {
 		for (int i = 0; i < depth; i++) {
 			layers[i].setWeights(networkWeights[i]);
 		}
+	}
+
+	public void switchLastLayerFunction(ActivationFunction newFunction) {
+		layers[depth - 1].switchFunction(newFunction);
 	}
 
 }
