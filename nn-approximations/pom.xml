@@ -29,7 +29,7 @@
 		<maven-apache-test-plugins.version>3.0.0-M6</maven-apache-test-plugins.version>
 		<maven-apache-plugins.version>3.10.1</maven-apache-plugins.version>
 		<maven-assembly-plugin.version>3.4.2</maven-assembly-plugin.version>
-		<jacoco-maven-plugin.version>0.8.8</jacoco-maven-plugin.version>
+		<jacoco-maven-plugin.version>0.8.12</jacoco-maven-plugin.version>
 		<dependency-check-maven.version>9.1.0</dependency-check-maven.version>
 		<maven-pmd-plugin.version>3.19.0</maven-pmd-plugin.version>
 	</properties>
