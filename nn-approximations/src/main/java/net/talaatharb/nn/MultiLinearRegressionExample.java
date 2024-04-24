@@ -49,7 +49,7 @@ public class MultiLinearRegressionExample {
 
 		final var algorithm = new StochasticGradientDescent(0.0001f);
 		final var lossFunction = new MeanSquareError();
-		algorithm.train(network, data, 0.0000001f, 500, lossFunction);
+		algorithm.train(network, data, 0.0000005f, 1000, lossFunction);
 
 		for(int i = 0; i < 3; i++) {			
 			log.info(network.getLayers()[0].getNeurons()[i].toString());
