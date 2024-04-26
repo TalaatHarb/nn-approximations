@@ -10,7 +10,7 @@ import net.talaatharb.nn.structures.FeedForwardNN;
 import net.talaatharb.nn.structures.TrainingData;
 
 @Slf4j
-public class TrainingExampleApplication {
+public class XorTrainingExampleApplication {
 
 	private static final String LINE = "------------";
 
@@ -18,33 +18,22 @@ public class TrainingExampleApplication {
 		final var inputs = new float[][] { new float[] { 0, 0 }, new float[] { 0, 1 }, new float[] { 1, 0 },
 				new float[] { 1, 1 } };
 
-		final var andOutputs = new float[][] { new float[] { 0 }, new float[] { 0 }, new float[] { 0 },
-				new float[] { 1 } };
-
-		final var orOutputs = new float[][] { new float[] { 0 }, new float[] { 1 }, new float[] { 1 },
-				new float[] { 1 } };
-
-		final var norOutputs = new float[][] { new float[] { 1 }, new float[] { 0 }, new float[] { 0 },
-				new float[] { 0 } };
-		final var nandOutputs = new float[][] { new float[] { 1 }, new float[] { 1 }, new float[] { 1 },
+		final var xorOutputs = new float[][] { new float[] { 0 }, new float[] { 1 }, new float[] { 1 },
 				new float[] { 0 } };
 
-		trainNetworkOnData(new TrainingData(inputs, andOutputs), "AND");
-		trainNetworkOnData(new TrainingData(inputs, orOutputs), "OR");
-		trainNetworkOnData(new TrainingData(inputs, norOutputs), "NOR");
-		trainNetworkOnData(new TrainingData(inputs, nandOutputs), "NAND");
+		trainNetworkOnData(new TrainingData(inputs, xorOutputs), "XOR");
 
 	}
 
 	private static void trainNetworkOnData(final TrainingData data, String symbol) {
-		final int[] shape = new int[] { 2, 1 };
-		final var functions = List.of(Functions.sigmoidFunction());
+		final int[] shape = new int[] { 2, 2, 1 };
+		final var functions = List.of(Functions.sigmoidFunction(), Functions.sigmoidFunction());
 		final var network = new FeedForwardNN(shape, functions);
 		network.randomize();
 
-		final var algorithm = new StochasticGradientDescent(4.0f);
+		final var algorithm = new StochasticGradientDescent(5.05f);
 		final var lossFunction = new MeanSquareError();
-		algorithm.train(network, data, 0.1f, 100, lossFunction);
+		algorithm.train(network, data, 0.01f, 10000, lossFunction);
 
 		network.switchLastLayerFunction(Functions.stepWithThreshold(0.0f));
 		printTruthTableBinary(network, symbol);

@@ -4,11 +4,11 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import org.junit.jupiter.api.Test;
 
-class TrainingExampleApplicationTest {
+class LogicTrainingExampleApplicationTest {
 
 	@Test
 	void testTrainingExample() {
-		TrainingExampleApplication.main(null);
+		LogicTrainingExampleApplication.main(null);
 		assertTrue(true);
 	}
 

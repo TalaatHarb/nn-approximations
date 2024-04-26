@@ -1,5 +1,9 @@
 package net.talaatharb.nn.algorithms;
 
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
+
 import lombok.AllArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import net.talaatharb.nn.metrics.LossFunction;
@@ -22,14 +26,19 @@ public class StochasticGradientDescent implements TrainingAlgorithm {
 		final var inputs = data.getInput();
 		final var outputs = data.getOutput();
 		final int dataPointsSize = Math.min(inputs.length, outputs.length);
+		final List<Integer> pointsList = new ArrayList<>(dataPointsSize);
+		for(int i=0; i < dataPointsSize; i++) {
+			pointsList.add(i);
+		}
+		
 		final int depth = network.getDepth();
 
-		// TODO extend to multi-layer scenario
 		for (int epoch = 0; epoch < maxEpochs; epoch++) {
 
 			float epochError = 0.0f;
-			// TODO shuffle data points
-			for (int dataPointIndex = 0; dataPointIndex < dataPointsSize; dataPointIndex++) {
+			Collections.shuffle(pointsList);
+			Integer[] indexes = pointsList.toArray(new Integer[] {});
+			for (var dataPointIndex : indexes) {
 
 				// inference
 				final var inputVec = inputs[dataPointIndex];
@@ -41,9 +50,10 @@ public class StochasticGradientDescent implements TrainingAlgorithm {
 				epochError += inputError;
 
 				// Update step
-				final float[] lossFunctionGradient = lossFunction.numericalDervative(expectedOutput, outputFromNetwork);
+				final float[] lastLayerGradient = lossFunction.numericalDervative(expectedOutput, outputFromNetwork);
 
-				for (int layerIndex = depth - 1; layerIndex >= 0; layerIndex--) {
+				float[] propagatedError = null;
+				for (int layerIndex = depth - 1; layerIndex >= depth - 1; layerIndex--) {
 					final NeuronLayer currentLayer = network.getLayers()[layerIndex];
 
 					final int numberOfInputsToLayer = currentLayer.inputSize();
@@ -55,16 +65,55 @@ public class StochasticGradientDescent implements TrainingAlgorithm {
 					final var layerFunction = currentLayer.getFunction();
 					final var layerWeights = currentLayer.weights();
 
-					final var layerGradient = new float[numberOfOutputsOfLayer];
+					var layerGradient = new float[numberOfOutputsOfLayer];
+					propagatedError = new float[numberOfInputsToLayer];
 					final var updatedWeights = new float[numberOfOutputsOfLayer][];
 					for (int k = 0; k < numberOfOutputsOfLayer; k++) {
-						layerGradient[k] = layerFunction.numericalDervative(0.0f, outputActivation[k]); // TODO fix
-																										// input
+						layerGradient[k] = lastLayerGradient[k]
+								* layerFunction.numericalDervative(0.0f, outputActivation[k]); // TODO fix
+						// input
 						updatedWeights[k] = new float[numberOfInputsToLayer + 1];
 						for (int m = 0; m < numberOfInputsToLayer + 1; m++) {
-							float weightGradient = m ==0 ? 1 : inputActivation[m-1];
+							float weightGradient = m == 0 ? 1 : inputActivation[m - 1];
+							if (m > 0) {
+								propagatedError[m - 1] = layerWeights[k][m - 1] * layerGradient[k];
+							}
 							updatedWeights[k][m] = layerWeights[k][m]
-									- learningRate * lossFunctionGradient[k] * layerGradient[k] * weightGradient;
+									- learningRate * layerGradient[k] * weightGradient;
+
+						}
+					}
+					currentLayer.setWeights(updatedWeights);
+				}
+
+				for (int layerIndex = depth - 2; layerIndex >= 0; layerIndex--) {
+					final NeuronLayer currentLayer = network.getLayers()[layerIndex];
+
+					final int numberOfInputsToLayer = currentLayer.inputSize();
+					final int numberOfOutputsOfLayer = currentLayer.outputSize();
+
+					final var inputActivation = currentLayer.getLastInput();
+					final var outputActivation = currentLayer.getLastOutput();
+
+					final var layerFunction = currentLayer.getFunction();
+					final var layerWeights = currentLayer.weights();
+
+					float[] layerGradient = propagatedError;
+					propagatedError = new float[numberOfInputsToLayer];
+					final var updatedWeights = new float[numberOfOutputsOfLayer][];
+					for (int k = 0; k < numberOfOutputsOfLayer; k++) {
+						layerGradient[k] = layerGradient[k]
+								* layerFunction.numericalDervative(0.0f, outputActivation[k]); // TODO fix
+						// input
+						updatedWeights[k] = new float[numberOfInputsToLayer + 1];
+						for (int m = 0; m < numberOfInputsToLayer + 1; m++) {
+							float weightGradient = m == 0 ? 1 : inputActivation[m - 1];
+							if (m > 0) {
+								propagatedError[m - 1] = layerWeights[k][m - 1] * layerGradient[k];
+							}
+							updatedWeights[k][m] = layerWeights[k][m]
+									- learningRate * layerGradient[k] * weightGradient;
+
 						}
 					}
 					currentLayer.setWeights(updatedWeights);
@@ -73,8 +122,9 @@ public class StochasticGradientDescent implements TrainingAlgorithm {
 			}
 			epochError /= dataPointsSize;
 			log.info("EPOCH: {}, error: {}", epoch + 1, epochError);
-			
-			if(epochError < threshold) break;
+
+			if (epochError < threshold)
+				break;
 
 		}
 	}
