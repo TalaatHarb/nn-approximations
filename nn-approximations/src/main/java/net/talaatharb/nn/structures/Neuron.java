@@ -17,6 +17,9 @@ public class Neuron implements Function<float[], Float> {
 
 	@Getter
 	private float lastOutput;
+	
+	@Getter
+	private float lastOutputBeforeActivation;
 
 	@Getter
 	private float[] lastInput;
@@ -57,12 +60,12 @@ public class Neuron implements Function<float[], Float> {
 	@Override
 	public Float apply(float[] input) {
 		lastInput = input;
-		float sum = weights[0];
+		lastOutputBeforeActivation = weights[0];
 		final int min = Math.min(input.length, weights.length - 1);
 		for (int i = 0; i < min; i++) {
-			sum += weights[i + 1] * input[i];
+			lastOutputBeforeActivation += weights[i + 1] * input[i];
 		}
-		lastOutput = function.apply(sum);
+		lastOutput = function.apply(lastOutputBeforeActivation);
 		return lastOutput;
 	}
 

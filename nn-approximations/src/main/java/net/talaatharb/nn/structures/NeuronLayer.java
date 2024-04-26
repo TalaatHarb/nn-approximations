@@ -35,6 +35,9 @@ public class NeuronLayer implements UnaryOperator<float[]> {
 	private float[] lastOutput;
 	
 	@Getter
+	private float[] lastOutputBeforeActivation;
+	
+	@Getter
 	private float[] lastInput;
 
 	public NeuronLayer(float[][] layerWeights) {
@@ -69,8 +72,11 @@ public class NeuronLayer implements UnaryOperator<float[]> {
 	public float[] apply(float[] input) {
 		lastInput = input;
 		lastOutput = new float[outputSize];
+		lastOutputBeforeActivation = new float[outputSize];
 		for (int i = 0; i < outputSize; i++) {
-			lastOutput[i] = neurons[i].apply(input);
+			Neuron currentNeuron = neurons[i];
+			lastOutput[i] = currentNeuron.apply(input);
+			lastOutputBeforeActivation[i] = currentNeuron.getLastOutputBeforeActivation();
 		}
 		return lastOutput;
 	}

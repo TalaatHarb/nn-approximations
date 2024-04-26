@@ -29,12 +29,17 @@ public class XorTrainingExampleApplication {
 		final int[] shape = new int[] { 2, 2, 1 };
 		final var functions = List.of(Functions.sigmoidFunction(), Functions.sigmoidFunction());
 		final var network = new FeedForwardNN(shape, functions);
-		network.randomize();
 
-		final var algorithm = new StochasticGradientDescent(5.05f);
+		final var algorithm = new StochasticGradientDescent(5.0f);
 		final var lossFunction = new MeanSquareError();
-		algorithm.train(network, data, 0.01f, 10000, lossFunction);
-
+		final float errorThreshold = 0.01f;
+		float error = Float.MAX_VALUE;
+		
+		// iterating to make a stable network even with gradient vanishing functions like sigmoid
+		while (error > errorThreshold) {
+			network.randomize();
+			error = algorithm.train(network, data, errorThreshold, 30000, lossFunction);
+		}
 		network.switchLastLayerFunction(Functions.stepWithThreshold(0.0f));
 		printTruthTableBinary(network, symbol);
 	}

@@ -17,8 +17,9 @@ class NeuronLayerTest {
 
 	@Test
 	void testDefaultLayerCanBeCreatedInAnySize() {
-		final int inputSize = RANDOM.nextInt(0, 100);
-		final int outputSize = RANDOM.nextInt(0, 100);
+		int n = 100;
+		final int inputSize = RANDOM.nextInt(1, n);
+		final int outputSize = RANDOM.nextInt(1, n);
 
 		final NeuronLayer layer = NeuronLayer.defaultWithInputOutputSize(inputSize, outputSize);
 

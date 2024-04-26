@@ -44,7 +44,7 @@ public class LogicTrainingExampleApplication {
 
 		final var algorithm = new StochasticGradientDescent(4.0f);
 		final var lossFunction = new MeanSquareError();
-		algorithm.train(network, data, 0.1f, 100, lossFunction);
+		algorithm.train(network, data, 0.05f, 100, lossFunction);
 
 		network.switchLastLayerFunction(Functions.stepWithThreshold(0.0f));
 		printTruthTableBinary(network, symbol);

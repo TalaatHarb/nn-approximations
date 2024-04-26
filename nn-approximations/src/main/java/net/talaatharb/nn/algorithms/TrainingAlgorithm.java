@@ -6,6 +6,6 @@ import net.talaatharb.nn.structures.TrainingData;
 
 public interface TrainingAlgorithm {
 
-	void train(FeedForwardNN network, TrainingData data, float threshold, int maxEpochs, LossFunction lossFunction);
+	float train(FeedForwardNN network, TrainingData data, float threshold, int maxEpochs, LossFunction lossFunction);
 
 }

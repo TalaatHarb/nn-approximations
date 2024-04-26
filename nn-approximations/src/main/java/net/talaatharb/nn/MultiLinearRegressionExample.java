@@ -47,7 +47,7 @@ public class MultiLinearRegressionExample {
 		final var network = new FeedForwardNN(shape, functions);
 		network.randomize();
 
-		final var algorithm = new StochasticGradientDescent(0.0001f);
+		final var algorithm = new StochasticGradientDescent(0.001f);
 		final var lossFunction = new MeanSquareError();
 		algorithm.train(network, data, 0.0000005f, 1000, lossFunction);
 

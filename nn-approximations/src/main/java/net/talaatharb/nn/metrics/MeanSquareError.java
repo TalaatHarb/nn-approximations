@@ -19,7 +19,7 @@ public class MeanSquareError implements LossFunction {
 		float[] result = new float[n];
 		
 		for(int i = 0; i < n; i++) {
-			result[i] = 2.0f * (output[i] - expectedOutput[i]);
+			result[i] = 2.0f * (output[i] - expectedOutput[i]) / n;
 		}
 		
 		return result;

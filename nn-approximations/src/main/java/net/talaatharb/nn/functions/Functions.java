@@ -32,7 +32,7 @@ public interface Functions {
 		return TANH;
 	}
 
-	public static UnaryOperator<Float> reluFunction() {
+	public static ActivationFunction reluFunction() {
 		return RELU;
 	}
 
