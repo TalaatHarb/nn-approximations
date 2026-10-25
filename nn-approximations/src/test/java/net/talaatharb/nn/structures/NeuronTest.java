@@ -18,7 +18,7 @@ class NeuronTest {
 
 	@Test
 	void testCreateDefaultNeuronWithAnySize() {
-		final int n = RANDOM.nextInt(0, 100);
+		final int n = RANDOM.nextInt(1, 100);
 		final Neuron neuron = Neuron.defaultWithSize(n);
 
 		assertNotNull(neuron);

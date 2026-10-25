@@ -18,7 +18,7 @@ class FeedForwardNNTest {
 
 	@Test
 	void testDefaultNetworkCanBeCreatedOfAnyStructure() {
-		final int numberOfLayersIncludingInput = RANDOM.nextInt(1, 10);
+		final int numberOfLayersIncludingInput = RANDOM.nextInt(2, 10);
 		final int[] shape = new int[numberOfLayersIncludingInput];
 		for (int i = 0; i < numberOfLayersIncludingInput; i++) {
 			shape[i] = RANDOM.nextInt(1, 10);

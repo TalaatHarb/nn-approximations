@@ -1,9 +1,10 @@
 package net.talaatharb.nn;
 
-import java.util.List;
+import java.util.Random;
 
 import lombok.extern.slf4j.Slf4j;
 import net.talaatharb.nn.algorithms.StochasticGradientDescent;
+import net.talaatharb.nn.examples.ExampleProblem;
 import net.talaatharb.nn.functions.Functions;
 import net.talaatharb.nn.metrics.MeanSquareError;
 import net.talaatharb.nn.structures.FeedForwardNN;
@@ -26,19 +27,15 @@ public class XorTrainingExampleApplication {
 	}
 
 	private static void trainNetworkOnData(final TrainingData data, String symbol) {
-		final int[] shape = new int[] { 2, 2, 1 };
-		final var functions = List.of(Functions.sigmoidFunction(), Functions.sigmoidFunction());
-		final var network = new FeedForwardNN(shape, functions);
+		final var example = ExampleProblem.XOR;
+		final var network = example.newNetwork();
 
-		final var algorithm = new StochasticGradientDescent(5.0f);
+		final var algorithm = new StochasticGradientDescent(example.learningRate(), new Random(42));
 		final var lossFunction = new MeanSquareError();
-		final float errorThreshold = 0.01f;
-		float error = Float.MAX_VALUE;
-		
-		// iterating to make a stable network even with gradient vanishing functions like sigmoid
-		while (error > errorThreshold) {
-			network.randomize();
-			error = algorithm.train(network, data, errorThreshold, 30000, lossFunction);
+		final float errorThreshold = example.threshold();
+		final float error = algorithm.train(network, data, errorThreshold, 5000, lossFunction);
+		if (error > errorThreshold) {
+			throw new IllegalStateException("XOR training did not converge: " + error);
 		}
 		network.switchLastLayerFunction(Functions.stepWithThreshold(0.0f));
 		printTruthTableBinary(network, symbol);
