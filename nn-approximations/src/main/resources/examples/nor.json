@@ -1,0 +1,20 @@
+{
+  "modelType" : "feedForward",
+  "formatVersion" : 1,
+  "name" : "NOR",
+  "description" : "Negated or; a universal gate.",
+  "task" : "classification",
+  "network" : {
+    "inputs" : 2,
+    "layers" : [ { "neurons" : 4, "activation" : "tanh" }, { "neurons" : 1, "activation" : "sigmoid" } ]
+  },
+  "initialization" : { "scheme" : "uniform", "min" : -1.0, "max" : 1.0, "seed" : 42 },
+  "training" : { "learningRate" : 0.3, "targetLoss" : 0.005, "maxEpochs" : 5000, "shuffleSeed" : 42 },
+  "dataset" : {
+    "type" : "table",
+    "inputNames" : [ "a", "b" ],
+    "outputNames" : [ "nor" ],
+    "inputs" : [ [ 0, 0 ], [ 0, 1 ], [ 1, 0 ], [ 1, 1 ] ],
+    "outputs" : [ [ 1 ], [ 0 ], [ 0 ], [ 0 ] ]
+  }
+}

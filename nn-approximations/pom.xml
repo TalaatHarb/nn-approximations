@@ -13,6 +13,7 @@
         <javafx.version>21.0.2</javafx.version>
         <lombok.version>1.18.42</lombok.version>
         <junit.version>5.11.4</junit.version>
+        <jackson.version>2.18.2</jackson.version>
         <app.mainClass>net.talaatharb.nn.VisualizationLauncher</app.mainClass>
     </properties>
     <dependencies>
@@ -20,6 +21,11 @@
             <groupId>org.openjfx</groupId>
             <artifactId>javafx-controls</artifactId>
             <version>${javafx.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>com.fasterxml.jackson.core</groupId>
+            <artifactId>jackson-databind</artifactId>
+            <version>${jackson.version}</version>
         </dependency>
         <dependency>
             <groupId>org.projectlombok</groupId>

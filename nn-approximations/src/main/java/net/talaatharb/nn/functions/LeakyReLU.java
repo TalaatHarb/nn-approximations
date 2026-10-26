@@ -11,10 +11,6 @@ public class LeakyReLU implements ActivationFunction {
 
 	@Override
 	public float numericalDervative(float input, float output) {
-		if (input == 0) {
-			return Float.NaN;
-		}
-
 		return input > 0 ? 1 : ALPHA;
 	}
 

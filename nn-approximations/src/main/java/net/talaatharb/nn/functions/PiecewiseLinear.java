@@ -29,10 +29,7 @@ public class PiecewiseLinear implements ActivationFunction {
 
 	@Override
 	public float numericalDervative(float input, float output) {
-		if (input == xMax || input == xMin) {
-			return Float.NaN;
-		}
-		if (input > xMin && input < xMax) {
+		if (input >= xMin && input <= xMax) {
 			return m;
 		}
 		return 0;

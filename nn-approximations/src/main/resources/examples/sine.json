@@ -1,0 +1,18 @@
+{
+  "modelType" : "feedForward",
+  "formatVersion" : 1,
+  "name" : "y = sin(pi x)",
+  "description" : "One full period of a sine wave approximated by a tanh hidden layer.",
+  "task" : "regression",
+  "network" : {
+    "inputs" : 1,
+    "layers" : [ { "neurons" : 8, "activation" : "tanh" }, { "neurons" : 1, "activation" : "linear" } ]
+  },
+  "initialization" : { "scheme" : "uniform", "min" : -1.0, "max" : 1.0, "seed" : 42 },
+  "training" : { "learningRate" : 0.02, "targetLoss" : 0.002, "maxEpochs" : 5000, "shuffleSeed" : 42 },
+  "dataset" : {
+    "type" : "function",
+    "inputs" : [ { "name" : "x", "min" : -1.0, "max" : 1.0, "samples" : 41 } ],
+    "outputs" : [ "sin(pi*x)" ]
+  }
+}

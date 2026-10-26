@@ -15,7 +15,8 @@ public class BinaryStep implements ActivationFunction {
 
 	@Override
 	public float numericalDervative(float input, float output) {
-		return input != 0 ? 0 : Float.NaN;
+		// A step has no useful gradient; gradient-based training cannot adjust weights behind it.
+		return 0;
 	}
 
 }

@@ -90,6 +90,19 @@ public class FeedForwardNN implements UnaryOperator<float[]>, InspectableNetwork
 		layers[depth - 1].switchFunction(newFunction);
 	}
 
+	/** Deep copy of [layer][neuron][bias, weights...]. */
+	public float[][][] copyWeights() {
+		final var result = new float[depth][][];
+		for (int l = 0; l < depth; l++) {
+			final var weights = layers[l].weights();
+			result[l] = new float[weights.length][];
+			for (int n = 0; n < weights.length; n++) {
+				result[l][n] = weights[n].clone();
+			}
+		}
+		return result;
+	}
+
 	@Override
 	public NetworkSnapshot inspect(float[] input) {
 		apply(input);

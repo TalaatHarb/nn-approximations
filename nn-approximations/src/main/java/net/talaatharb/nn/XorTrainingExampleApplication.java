@@ -1,10 +1,8 @@
 package net.talaatharb.nn;
 
-import java.util.Random;
-
 import lombok.extern.slf4j.Slf4j;
 import net.talaatharb.nn.algorithms.StochasticGradientDescent;
-import net.talaatharb.nn.examples.ExampleProblem;
+import net.talaatharb.nn.config.ExampleCatalog;
 import net.talaatharb.nn.functions.Functions;
 import net.talaatharb.nn.metrics.MeanSquareError;
 import net.talaatharb.nn.structures.FeedForwardNN;
@@ -27,13 +25,14 @@ public class XorTrainingExampleApplication {
 	}
 
 	private static void trainNetworkOnData(final TrainingData data, String symbol) {
-		final var example = ExampleProblem.XOR;
-		final var network = example.newNetwork();
+		final var example = ExampleCatalog.builtIn("xor");
+		final var network = example.createNetwork(42);
+		final var training = example.training();
 
-		final var algorithm = new StochasticGradientDescent(example.learningRate(), new Random(42));
+		final var algorithm = new StochasticGradientDescent(training.learningRate(), training.shuffleRandom());
 		final var lossFunction = new MeanSquareError();
-		final float errorThreshold = example.threshold();
-		final float error = algorithm.train(network, data, errorThreshold, 5000, lossFunction);
+		final float errorThreshold = training.targetLoss();
+		final float error = algorithm.train(network, data, errorThreshold, training.maxEpochs(), lossFunction);
 		if (error > errorThreshold) {
 			throw new IllegalStateException("XOR training did not converge: " + error);
 		}

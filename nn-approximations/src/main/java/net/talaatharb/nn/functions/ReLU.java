@@ -9,9 +9,7 @@ public class ReLU implements ActivationFunction {
 
 	@Override
 	public float numericalDervative(float input, float output) {
-		if (input == 0) {
-			return Float.NaN;
-		}
+		// Subgradient 0 at the kink keeps training finite.
 		return input > 0 ? 1 : 0.0f;
 	}
 
