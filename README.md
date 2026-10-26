@@ -18,11 +18,11 @@ JavaFX dependencies and platform-native libraries are resolved by Maven; no sepa
 Every example is a JSON **model definition**. Eight built-ins ship as resources (`src/main/resources/examples`: XOR, AND, OR, NAND, NOR, linear, square, sine). User models are stored as `<id>.json` in `~/.nn-approximations/models` (override with the `nn.models.dir` Java system property). A user file with a built-in id (e.g. `xor.json`) overrides that built-in; **Restore built-in** deletes the override. Invalid files are skipped and reported in the status line.
 
 - **New / Edit / Duplicate** open the model editor. Editing a built-in saves a modified copy; New and Duplicate save under a fresh id derived from the name.
-- **Import** copies a JSON file into the model directory after validation. **Export** writes the configuration (optionally with the network's current weights) or the current network in a standard format (see below).
+- **Import** copies a JSON file into the model directory after validation. **Export** writes the configuration (optionally with the network's current weights) or the current network in a standard format (see below). **View JSON** opens a read-only, syntax-highlighted view of the model with the network's current weights (toggle weights, wrap lines, find, copy).
 - The editor has three tabs:
   - **Model**: name, description, task (regression/classification), any number of hidden layers (neurons, activation and activation parameters, reorder/remove), output activation, weight initialization and training defaults. Input and output layer sizes follow the dataset.
   - **Data**: either a *function* (input variables with min/max/sample count, sampled as a grid, plus one expression per output, e.g. `sin(pi*x)`, `x1*x2`, `xor(a, b)`) or a *table* of rows such as `0, 1 -> 1`.
-  - **JSON**: edit the raw definition and apply it back to the form.
+  - **JSON**: edit the raw definition (syntax highlighting and line numbers, via RichTextFX) and apply it back to the form.
   Stored weights are kept only when the topology is unchanged.
 
 ```json
@@ -65,9 +65,68 @@ The **Export** menu writes the network with its current weights. Files are writt
 
 Both exporters are checked against the Java network in the tests: ONNX through onnxruntime, and PMML through an independent evaluator.
 
+### Running exported models from Python
+
+Requirements:
+
+- Python 3.9 or later.
+- ONNX: `pip install onnxruntime numpy`.
+- PMML: `pip install pypmml`. PyPMML wraps the Java PMML4S engine, so it also needs a Java 8+ runtime on the `PATH`. Any other PMML 4.4 consumer (e.g. JPMML, KNIME) works too.
+
+Save the script as `run_model.py`:
+
+```python
+"""Run a model exported by nn-approximations (ONNX or PMML).
+
+    python run_model.py xor.onnx 0,1 1,1
+    python run_model.py xor.pmml 0,1 1,1
+"""
+import sys
+
+
+def run_onnx(path, rows):
+    import numpy as np
+    import onnxruntime as ort
+
+    session = ort.InferenceSession(path, providers=["CPUExecutionProvider"])
+    meta = session.get_modelmeta().custom_metadata_map
+    inputs = np.asarray(rows, dtype=np.float32)            # shape [batch, inputs]
+    (outputs,) = session.run(["output"], {"input": inputs})  # shape [batch, outputs]
+    names = meta["nn.output_names"].split(",")
+    return [dict(zip(names, map(float, row))) for row in outputs]
+
+
+def run_pmml(path, rows):
+    from pypmml import Model
+
+    model = Model.fromFile(path)
+    names = model.inputNames
+    return [model.predict(dict(zip(names, row))) for row in rows]
+
+
+if __name__ == "__main__":
+    path, rows = sys.argv[1], [[float(v) for v in arg.split(",")] for arg in sys.argv[2:]]
+    run = run_onnx if path.endswith(".onnx") else run_pmml
+    for row, result in zip(rows, run(path, rows)):
+        print(row, "->", result)
+```
+
+Example output for a trained XOR network (exact values depend on the weights):
+
+```text
+> python run_model.py xor.onnx 0,0 0,1
+[0.0, 0.0] -> {'xor': 0.0312...}
+[0.0, 1.0] -> {'xor': 0.9714...}
+> python run_model.py xor.pmml 0,0 0,1
+[0.0, 0.0] -> {'predicted_xor': 0.0312...}
+[0.0, 1.0] -> {'predicted_xor': 0.9714...}
+```
+
+Inputs are given in the model's input order (`nn.input_names` in the ONNX metadata, or the PMML `MiningSchema`). PyPMML prefixes each output with `predicted_`. A model logged to MLflow can also be run with `mlflow.pyfunc.load_model("runs:/<run id>/model")`, as shown below.
+
 ## MLflow tracking
 
-Tick **Log runs to MLflow** to record each Train or Single update session as an MLflow run. Tracking is off by default. **MLflow settings…** sets the tracking URI and the experiment, which is created if missing, and has a **Test connection** button. Settings are stored in `~/.nn-approximations/mlflow.json`; override the path with `-Dnn.mlflow.settings=<file>`. The default URI is `https://mlflow.talaatharb.net`. The defaults can also come from `-Dnn.mlflow.uri`/`MLFLOW_TRACKING_URI` and `-Dnn.mlflow.experiment`/`MLFLOW_EXPERIMENT_NAME`; enable tracking with `-Dnn.mlflow.enabled=true`. Credentials are read only from `MLFLOW_TRACKING_TOKEN` or `MLFLOW_TRACKING_USERNAME`/`MLFLOW_TRACKING_PASSWORD`, and are never saved.
+Tick **Log runs to MLflow** to record each Train or Single update session as an MLflow run. Tracking is off by default. **MLflow settings…** sets the tracking URI and the experiment, which is created if missing, and has a **Test connection** button. Settings are stored in `~/.nn-approximations/mlflow.json`; override the path with `-Dnn.mlflow.settings=<file>`. The default URI is `https://mlflow.talaatharb.net`. The defaults can also come from `-Dnn.mlflow.uri`/`MLFLOW_TRACKING_URI` and `-Dnn.mlflow.experiment`/`MLFLOW_EXPERIMENT_NAME`; enable tracking with `-Dnn.mlflow.enabled=true`. For servers with authentication (e.g. `mlflow server --app-name basic-auth`), enter a **Username** and **Password**; they are sent with HTTP basic authentication, and **Test connection** checks that they are accepted. The password is kept for the session only unless **Save password** is ticked, in which case it is stored as plain text in the settings file (restricted to the current user where the file system allows). Without a username, `MLFLOW_TRACKING_TOKEN` or `MLFLOW_TRACKING_USERNAME`/`MLFLOW_TRACKING_PASSWORD` are used.
 
 Each run records:
 
@@ -125,7 +184,7 @@ Classes above live under `net.talaatharb.nn.config`, `.algorithms`, and `.metric
 
 The Maven setup targets Java 21, explicitly configures Lombok annotation processing (including newer JDK support), and uses the real desktop launcher rather than the template's nonexistent main class. Unused MapStruct/Mockito dependencies and the overwriting fat-JAR assembly were removed. JaCoCo reports are generated in `target/site/jacoco`; the previous template's blanket per-package coverage gate and unused mutation/static-analysis configuration are not part of the default build.
 
-Tests cover finite-difference backpropagation across multiple hidden layers and outputs, immutable snapshots, cancellation, validation, truth tables, the expression language, JSON round trips and validation, initializer reproducibility, the model catalog, and convergence/interpolation of every built-in example. They also cover ONNX/PMML export, comparing against onnxruntime (a test-only dependency) and an independent PMML evaluator, and the MLflow client and run logger, against an in-process fake MLflow server. An optional desktop smoke test exercises stepping, stopping, inference, model switching, seeded randomization, JSON/ONNX/PMML export, MLflow run logging (against the fake server), the editor and convergence:
+Tests cover finite-difference backpropagation across multiple hidden layers and outputs, immutable snapshots, cancellation, validation, truth tables, the expression language, JSON round trips and validation, initializer reproducibility, the model catalog, and convergence/interpolation of every built-in example. They also cover ONNX/PMML export, comparing against onnxruntime (a test-only dependency) and an independent PMML evaluator, the MLflow client, basic authentication and run logger, against an in-process fake MLflow server, and JSON syntax highlighting. An optional desktop smoke test exercises stepping, stopping, inference, model switching, seeded randomization, JSON/ONNX/PMML export, the JSON viewer, MLflow run logging (against the fake server), the editor and convergence:
 
 ```powershell
 mvn "-Dtest=VisualizationSmokeTest" "-Djavafx.smoke=true" test
