@@ -282,10 +282,7 @@ class VisualizationSmokeTest {
 				return null;
 			});
 			await(window, () -> hasLabel(window, "test rows from test/flowers (scaled)"));
-			fx(() -> {
-				final var input = window.getScene().getRoot().lookupAll(".text-field").stream()
-						.filter(TextField.class::isInstance).map(TextField.class::cast)
-						.filter(field -> field.getText().split(",").length == 4).findFirst().orElseThrow();
+			final var chartsScroll = fx(() -> {
 				final var results = window.getScene().getRoot().lookupAll(".text-area").stream()
 						.filter(node -> node.getStyle().contains("monospace")).findFirst().orElseThrow();
 				javafx.scene.Parent parent = results.getParent();
@@ -294,13 +291,21 @@ class VisualizationSmokeTest {
 				}
 				final var scroll = (javafx.scene.control.ScrollPane) parent;
 				window.setHeight(500);
-				window.getScene().getRoot().applyCss();
-				window.getScene().getRoot().layout();
-				assertTrue(scroll.getContent().getBoundsInLocal().getHeight() > scroll.getViewportBounds().getHeight(),
-						"a short window scrolls the charts panel");
+				return scroll;
+			});
+			// Native window resizing and the subsequent JavaFX layout happen asynchronously.
+			await(window, () -> chartsScroll.getViewportBounds().getHeight() > 0
+					&& chartsScroll.getContent().getBoundsInLocal().getHeight()
+							> chartsScroll.getViewportBounds().getHeight());
+			fx(() -> {
+				final var results = window.getScene().getRoot().lookupAll(".text-area").stream()
+						.filter(node -> node.getStyle().contains("monospace")).findFirst().orElseThrow();
 				assertTrue(results.getBoundsInParent().getHeight() >= 160, "the results table keeps its height");
-				scroll.setVvalue(1);
+				chartsScroll.setVvalue(1);
 				window.setHeight(900);
+				final var input = window.getScene().getRoot().lookupAll(".text-field").stream()
+						.filter(TextField.class::isInstance).map(TextField.class::cast)
+						.filter(field -> field.getText().split(",").length == 4).findFirst().orElseThrow();
 				input.setText("5.1, 3.5, 1.4, 0.2");
 				button(window, "Infer").fire();
 				assertTrue(hasLabel(window, "Input [5.1, 3.5, 1.4, 0.2] ->"));
