@@ -7,11 +7,14 @@ import com.fasterxml.jackson.annotation.JsonTypeInfo;
 
 import net.talaatharb.nn.structures.TrainingData;
 
-/** Training samples, either generated from expressions on a grid or listed explicitly. */
+/** Training samples: generated from expressions on a grid, listed explicitly, or rows/images from Hugging Face. */
 @JsonTypeInfo(use = JsonTypeInfo.Id.NAME, property = "type")
 @JsonSubTypes({ @JsonSubTypes.Type(value = FunctionDataset.class, name = "function"),
-		@JsonSubTypes.Type(value = TableDataset.class, name = "table") })
-public sealed interface DatasetSpec permits FunctionDataset, TableDataset {
+		@JsonSubTypes.Type(value = TableDataset.class, name = "table"),
+		@JsonSubTypes.Type(value = HuggingFaceDataset.class, name = "huggingFace"),
+		@JsonSubTypes.Type(value = HuggingFaceTableDataset.class, name = "huggingFaceTable") })
+public sealed interface DatasetSpec permits FunctionDataset, TableDataset, HuggingFaceDataset,
+		HuggingFaceTableDataset {
 
 	int MAX_SAMPLES = 20_000;
 
@@ -29,4 +32,9 @@ public sealed interface DatasetSpec permits FunctionDataset, TableDataset {
 
 	/** [input][0 = min, 1 = max], used to frame visualizations. */
 	float[][] inputBounds();
+
+	/** Maps raw values to what the network sees; identity unless the dataset normalizes its columns. */
+	default DataScaling scaling() {
+		return DataScaling.identity(inputSize(), outputSize());
+	}
 }

@@ -22,7 +22,7 @@ import java.util.Optional;
 public final class ExampleCatalog {
 
 	public static final List<String> BUILT_IN_IDS = List.of("xor", "and", "or", "nand", "nor", "linear", "square",
-			"sine");
+			"sine", "mnist", "iris", "california_housing");
 	public static final String MODELS_DIR_PROPERTY = "nn.models.dir";
 
 	public enum Source {

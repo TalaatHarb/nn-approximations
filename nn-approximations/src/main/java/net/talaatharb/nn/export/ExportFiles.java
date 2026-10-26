@@ -35,6 +35,15 @@ final class ExportFiles {
 		}
 	}
 
+	static void requireCompatible(ModelDefinition model, net.talaatharb.nn.config.DataScaling scaling) {
+		final int[] shape = model.network().shape();
+		if (scaling == null || scaling.inputOffset().length != shape[0]
+				|| scaling.outputOffset().length != shape[shape.length - 1]) {
+			throw new IllegalArgumentException("The data scaling does not match the network shape "
+					+ model.network().describe());
+		}
+	}
+
 	static void writeAtomically(Path path, byte[] content) throws IOException {
 		final Path target = path.toAbsolutePath();
 		final Path temp = Files.createTempFile(target.getParent(), target.getFileName().toString(), ".tmp");

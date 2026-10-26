@@ -26,8 +26,11 @@ import javafx.stage.Stage;
 import net.talaatharb.nn.config.ActivationSpec;
 import net.talaatharb.nn.config.ActivationType;
 import net.talaatharb.nn.config.ExampleCatalog;
+import net.talaatharb.nn.config.ModelDefinition;
 import net.talaatharb.nn.config.ModelJson;
 import net.talaatharb.nn.config.NetworkSpec;
+import net.talaatharb.nn.data.DatasetCache;
+import net.talaatharb.nn.data.FakeHuggingFaceServer;
 import net.talaatharb.nn.tracking.FakeMlflowServer;
 import net.talaatharb.nn.tracking.MlflowSettings;
 
@@ -125,9 +128,9 @@ class VisualizationSmokeTest {
 			});
 			await(stage, () -> hasLabel(stage, "Target reached:"));
 			assertTrue(fx(() -> !button(stage, "Infer").isDisabled()));
-			await(stage, () -> hasLabel(stage, "Run logged") && mlflow.runs().size() == 3
-					&& mlflow.runs().stream().noneMatch(run -> run.status.equals("RUNNING")));
-			final var runs = mlflow.runs();
+			await(stage, () -> hasLabel(stage, "Run logged") && smokeRuns().size() == 3
+					&& smokeRuns().stream().noneMatch(run -> run.status.equals("RUNNING")));
+			final var runs = smokeRuns();
 			assertEquals(List.of("KILLED", "FINISHED", "FINISHED"), runs.stream().map(run -> run.status).toList());
 			assertEquals(List.of("xor", "xor", "square"), runs.stream().map(run -> run.params.get("model.id")).toList());
 			final var xorRun = runs.get(1);
@@ -174,6 +177,225 @@ class VisualizationSmokeTest {
 	}
 
 	@Test
+	void imageClassificationLoadsFromHuggingFaceInfersAndTrains() throws Exception {
+		final Path cache = models.resolve("hf-cache");
+		System.setProperty(DatasetCache.DIRECTORY_PROPERTY, cache.toString());
+		final var hub = new FakeHuggingFaceServer();
+		hub.install();
+		final var application = new NetworkVisualizationApplication();
+		Stage stage = null;
+		try {
+			new ExampleCatalog(models).save("shapes-smoke", ModelJson.read(FakeHuggingFaceServer.SHAPES_JSON));
+			stage = fx(() -> {
+				final var window = new Stage();
+				application.start(window);
+				return window;
+			});
+			final var window = stage;
+			fx(() -> {
+				final ComboBox<ExampleCatalog.Entry> selector = modelSelector(window);
+				selector.setValue(selector.getItems().stream().filter(entry -> entry.id().equals("shapes-smoke"))
+						.findFirst().orElseThrow());
+				return null;
+			});
+			await(window, () -> hasLabel(window, "60 training + 30 test images from test/shapes"));
+			fx(() -> {
+				final var view = (ImageClassificationView) window.getScene().getRoot().lookupAll("*").stream()
+						.filter(ImageClassificationView.class::isInstance).findFirst().orElseThrow();
+				assertTrue(view.isVisible());
+				assertTrue(view.visibleThumbnails() > 0);
+				assertTrue(hasLabel(window, "horizontal"));
+				final var input = window.getScene().getRoot().lookupAll(".text-field").stream()
+						.filter(TextField.class::isInstance).map(TextField.class::cast)
+						.filter(field -> "test:0".equals(field.getText())).findFirst().orElseThrow();
+				input.setText("test:1");
+				button(window, "Infer").fire();
+				assertTrue(hasLabel(window, "test:1 (label vertical)"));
+				button(window, "Train").fire();
+				return null;
+			});
+			await(window, () -> hasLabel(window, "Epoch limit reached:") || hasLabel(window, "Target reached:"));
+			await(window, () -> mlflow.runs().stream().anyMatch(run -> "shapes-smoke".equals(run.params.get("model.id"))
+					&& run.status.equals("FINISHED")));
+			final var run = mlflow.runs().stream().filter(item -> "shapes-smoke".equals(item.params.get("model.id")))
+					.findFirst().orElseThrow();
+			assertEquals("huggingFace", run.params.get("dataset.type"));
+			assertTrue(Double.parseDouble(run.metrics("test_accuracy").get(0).path("value").asText()) >= 0.6,
+					"the strokes are easy to tell apart");
+			assertTrue(hub.requests.stream().anyMatch(path -> path.contains("/files/test/")));
+		} finally {
+			final var window = stage;
+			fx(() -> {
+				application.stop();
+				if (window != null) {
+					window.close();
+				}
+				return null;
+			});
+			hub.close();
+			FakeHuggingFaceServer.uninstall();
+			System.clearProperty(DatasetCache.DIRECTORY_PROPERTY);
+		}
+	}
+
+	private static final String FLOWERS_JSON = """
+			{
+			  "name" : "Flowers",
+			  "task" : "classification",
+			  "network" : { "inputs" : 4, "layers" : [ { "neurons" : 6, "activation" : "tanh" },
+			    { "neurons" : 3, "activation" : "sigmoid" } ] },
+			  "initialization" : { "scheme" : "xavierUniform", "seed" : 3 },
+			  "training" : { "learningRate" : 0.2, "targetLoss" : 0.0001, "maxEpochs" : 60, "shuffleSeed" : 1 },
+			  "dataset" : {
+			    "type" : "huggingFaceTable",
+			    "repository" : "test/flowers",
+			    "inputColumns" : [ "SepalLengthCm", "SepalWidthCm", "PetalLengthCm", "PetalWidthCm" ],
+			    "targetColumn" : "Species",
+			    "classes" : [ "setosa", "versicolor", "virginica" ],
+			    "samples" : 100,
+			    "testSamples" : 15,
+			    "seed" : 5
+			  }
+			}
+			""";
+
+	@Test
+	void tableDatasetLoadsFromHuggingFaceInfersTrainsAndEdits() throws Exception {
+		final Path cache = models.resolve("hf-table-cache");
+		System.setProperty(DatasetCache.DIRECTORY_PROPERTY, cache.toString());
+		final var hub = new FakeHuggingFaceServer();
+		hub.install();
+		final var application = new NetworkVisualizationApplication();
+		Stage stage = null;
+		try {
+			new ExampleCatalog(models).save("flowers-smoke", ModelJson.read(FLOWERS_JSON));
+			stage = fx(() -> {
+				final var window = new Stage();
+				application.start(window);
+				return window;
+			});
+			final var window = stage;
+			fx(() -> {
+				final ComboBox<ExampleCatalog.Entry> selector = modelSelector(window);
+				selector.setValue(selector.getItems().stream().filter(entry -> entry.id().equals("flowers-smoke"))
+						.findFirst().orElseThrow());
+				return null;
+			});
+			await(window, () -> hasLabel(window, "test rows from test/flowers (scaled)"));
+			fx(() -> {
+				final var input = window.getScene().getRoot().lookupAll(".text-field").stream()
+						.filter(TextField.class::isInstance).map(TextField.class::cast)
+						.filter(field -> field.getText().split(",").length == 4).findFirst().orElseThrow();
+				final var results = window.getScene().getRoot().lookupAll(".text-area").stream()
+						.filter(node -> node.getStyle().contains("monospace")).findFirst().orElseThrow();
+				javafx.scene.Parent parent = results.getParent();
+				while (!(parent instanceof javafx.scene.control.ScrollPane)) {
+					parent = parent.getParent();
+				}
+				final var scroll = (javafx.scene.control.ScrollPane) parent;
+				window.setHeight(500);
+				window.getScene().getRoot().applyCss();
+				window.getScene().getRoot().layout();
+				assertTrue(scroll.getContent().getBoundsInLocal().getHeight() > scroll.getViewportBounds().getHeight(),
+						"a short window scrolls the charts panel");
+				assertTrue(results.getBoundsInParent().getHeight() >= 160, "the results table keeps its height");
+				scroll.setVvalue(1);
+				window.setHeight(900);
+				input.setText("5.1, 3.5, 1.4, 0.2");
+				button(window, "Infer").fire();
+				assertTrue(hasLabel(window, "Input [5.1, 3.5, 1.4, 0.2] ->"));
+				input.setText("test:2");
+				button(window, "Infer").fire();
+				assertTrue(hasLabel(window, "test:2 ["));
+				assertTrue(hasLabel(window, "(target "));
+				window.getScene().getRoot().lookupAll(".slider").stream()
+						.filter(javafx.scene.control.Slider.class::isInstance)
+						.map(javafx.scene.control.Slider.class::cast).forEach(slider -> slider.setValue(0));
+				button(window, "Train").fire();
+				return null;
+			});
+			await(window, () -> hasLabel(window, "Epoch limit reached:") || hasLabel(window, "Target reached:"));
+			await(window, () -> mlflow.runs().stream().anyMatch(run -> "flowers-smoke".equals(run.params.get("model.id"))
+					&& run.status.equals("FINISHED")));
+			final var run = mlflow.runs().stream().filter(item -> "flowers-smoke".equals(item.params.get("model.id")))
+					.findFirst().orElseThrow();
+			assertEquals("huggingFaceTable", run.params.get("dataset.type"));
+			assertEquals("Species", run.params.get("dataset.target"));
+			assertEquals("held out from train", run.params.get("dataset.test_split"));
+			assertTrue(Double.parseDouble(run.metrics("test_accuracy").get(0).path("value").asText()) >= 0.6,
+					"species separate well on petal sizes");
+			assertTrue(run.metrics("accuracy").size() > 0);
+
+			fx(() -> {
+				final var editor = new ModelEditorPane();
+				final var flowers = ModelJson.read(FLOWERS_JSON);
+				editor.load(flowers);
+				assertEquals(ModelJson.write(flowers), ModelJson.write(editor.build()));
+				final var houses = ExampleCatalog.builtIn("california_housing");
+				editor.load(houses);
+				assertEquals(ModelJson.write(houses), ModelJson.write(editor.build()));
+				return null;
+			});
+			final var form = fx(() -> {
+				final var editor = new ModelEditorPane();
+				editor.load(ModelJson.read(FLOWERS_JSON));
+				final var table = editor.tableForm();
+				table.repository.setText(FakeHuggingFaceServer.HOUSES);
+				table.loadInfo.fire();
+				return new Object[] { editor, table };
+			});
+			final var editor = (ModelEditorPane) form[0];
+			final var table = (HuggingFaceTableForm) form[1];
+			awaitFx(() -> !table.loadInfo.isDisabled() && !table.info.getText().startsWith("Asking"));
+			fx(() -> {
+				assertTrue(table.classNames().isEmpty(), table.info.getText());
+				assertEquals("test", table.testSplit.getValue());
+				final var built = editor.build();
+				assertEquals(ModelDefinition.Task.REGRESSION, built.task());
+				assertEquals(1, built.network().layers().get(built.network().layers().size() - 1).neurons());
+				final var dataset = (net.talaatharb.nn.config.HuggingFaceTableDataset) built.dataset();
+				assertEquals(List.of("rooms", "age"), dataset.inputColumns());
+				assertEquals("price", dataset.targetColumn());
+				table.repository.setText(FakeHuggingFaceServer.FLOWERS);
+				table.loadInfo.fire();
+				return null;
+			});
+			awaitFx(() -> !table.loadInfo.isDisabled() && table.info.getText().startsWith("default"));
+			fx(() -> {
+				assertEquals(FakeHuggingFaceServer.SPECIES, table.classNames(), table.info.getText());
+				final var built = editor.build();
+				assertEquals(ModelDefinition.Task.CLASSIFICATION, built.task());
+				final var dataset = (net.talaatharb.nn.config.HuggingFaceTableDataset) built.dataset();
+				assertEquals(FakeHuggingFaceServer.FLOWER_FEATURES, dataset.inputColumns(), "Id is left out");
+				assertEquals(3, built.network().layers().get(built.network().layers().size() - 1).neurons());
+				return null;
+			});
+		} finally {
+			final var window = stage;
+			fx(() -> {
+				application.stop();
+				if (window != null) {
+					window.close();
+				}
+				return null;
+			});
+			hub.close();
+			FakeHuggingFaceServer.uninstall();
+			System.clearProperty(DatasetCache.DIRECTORY_PROPERTY);
+		}
+	}
+
+	private static void awaitFx(BooleanSupplier condition) throws Exception {
+		final long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(30);
+		while (!fx(condition::getAsBoolean)) {
+			if (System.nanoTime() > deadline) {
+				fail("Timed out waiting for the editor");
+			}
+			Thread.sleep(50);
+		}
+	}
+
+	@Test
 	void editorAddsLayersAndRejectsInvalidInput() throws Exception {
 		fx(() -> {
 			final var editor = new ModelEditorPane();
@@ -190,8 +412,19 @@ class VisualizationSmokeTest {
 			final var sine = ExampleCatalog.builtIn("sine");
 			editor.load(sine);
 			assertEquals(ModelJson.write(sine), ModelJson.write(editor.build()));
+
+			final var mnist = ExampleCatalog.builtIn("mnist");
+			editor.load(mnist);
+			assertEquals(ModelJson.write(mnist), ModelJson.write(editor.build()));
+			editor.load(xor);
+			assertEquals(ModelDefinition.Task.CLASSIFICATION, editor.build().task());
 			return null;
 		});
+	}
+
+	private static List<FakeMlflowServer.Run> smokeRuns() {
+		return mlflow.runs().stream().filter(run -> !"shapes-smoke".equals(run.params.get("model.id"))
+				&& !"flowers-smoke".equals(run.params.get("model.id"))).toList();
 	}
 
 	@SuppressWarnings("unchecked")

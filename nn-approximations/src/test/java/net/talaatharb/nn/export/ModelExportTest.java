@@ -23,6 +23,7 @@ import ai.onnxruntime.OnnxTensor;
 import ai.onnxruntime.OrtEnvironment;
 import ai.onnxruntime.OrtSession;
 import net.talaatharb.nn.config.ActivationSpec;
+import net.talaatharb.nn.config.DataScaling;
 import net.talaatharb.nn.config.ExampleCatalog;
 import net.talaatharb.nn.config.ModelDefinition;
 import net.talaatharb.nn.config.ModelJson;
@@ -96,7 +97,7 @@ class ModelExportTest {
 		for (var entry : models().entrySet()) {
 			final var model = entry.getValue();
 			final var network = network(model);
-			final byte[] onnx = OnnxExporter.toBytes(model, network.copyWeights());
+			final byte[] onnx = OnnxExporter.toBytes(model, network.copyWeights(), identity(model));
 			final float[][] inputs = inputs(model.network().inputs());
 			try (var session = environment.createSession(onnx, new OrtSession.SessionOptions());
 					var tensor = OnnxTensor.createTensor(environment, inputs);
@@ -123,13 +124,45 @@ class ModelExportTest {
 			}
 			exported++;
 			final var network = network(model);
-			final var pmml = new Pmml(PmmlExporter.toXml(model, network.copyWeights()));
+			final var pmml = new Pmml(PmmlExporter.toXml(model, network.copyWeights(), identity(model)));
 			assertEquals(model.network().layers().size(), pmml.layers.size());
 			for (float[] input : inputs(model.network().inputs())) {
 				assertClose(network.apply(input), pmml.evaluate(input), entry.getKey());
 			}
 		}
-		assertEquals(11, exported, "built-ins plus relu, step and linear networks");
+		assertEquals(14, exported, "built-ins plus relu, step and linear networks");
+	}
+
+	/** Hugging Face table built-ins would need their (downloaded) rows for the dataset scaling. */
+	private static DataScaling identity(ModelDefinition model) {
+		final int[] shape = model.network().shape();
+		return DataScaling.identity(shape[0], shape[shape.length - 1]);
+	}
+
+	@Test
+	void scaledExportsTakeRawInputsAndReturnTargetUnits() throws Exception {
+		final var model = ExampleCatalog.builtIn("xor");
+		final var network = network(model);
+		final var scaling = new DataScaling(new float[] { 10, -3 }, new float[] { 4, 0.5f }, new float[] { 100 },
+				new float[] { 25 });
+		final float[][] raw = { { 10, -3 }, { 14, -2.5f }, { 2, 1 }, { 25, -7 } };
+		final byte[] onnx = OnnxExporter.toBytes(model, network.copyWeights(), scaling);
+		final var pmml = new Pmml(PmmlExporter.toXml(model, network.copyWeights(), scaling));
+		try (var session = environment.createSession(onnx, new OrtSession.SessionOptions());
+				var tensor = OnnxTensor.createTensor(environment, raw);
+				var result = session.run(Map.of(OnnxExporter.INPUT, tensor))) {
+			final float[][] outputs = (float[][]) result.get(OnnxExporter.OUTPUT).orElseThrow().getValue();
+			for (int i = 0; i < raw.length; i++) {
+				final float[] expected = scaling.unscaleOutput(network.apply(scaling.scaleInput(raw[i])));
+				assertClose(expected, toDouble(outputs[i]), "onnx sample " + i);
+				assertClose(expected, pmml.evaluate(raw[i]), "pmml sample " + i);
+			}
+			assertTrue(session.getMetadata().getCustomMetadata().containsKey("nn.output_scaling"));
+		}
+		assertFalse(PmmlExporter.toXml(model, network.copyWeights()).contains("NormContinuous"),
+				"datasets without scaling keep plain field references");
+		assertThrows(IllegalArgumentException.class, () -> OnnxExporter.toBytes(model, network.copyWeights(),
+				DataScaling.identity(3, 1)));
 	}
 
 	@Test
@@ -188,6 +221,9 @@ class ModelExportTest {
 		private record Layer(String activation, double threshold, List<Neuron> neurons) {
 		}
 
+		/** Optional {orig0, orig1} of a two-point LinearNorm (norm 0 and 1) per input/output position. */
+		final List<double[]> inputNorms = new ArrayList<>();
+		final List<double[]> outputNorms = new ArrayList<>();
 		final List<String> inputIds = new ArrayList<>();
 		final List<Layer> layers = new ArrayList<>();
 		final List<String> outputIds = new ArrayList<>();
@@ -200,6 +236,7 @@ class ModelExportTest {
 			final var inputs = document.getElementsByTagName("NeuralInput");
 			for (int i = 0; i < inputs.getLength(); i++) {
 				inputIds.add(((Element) inputs.item(i)).getAttribute("id"));
+				inputNorms.add(norm((Element) inputs.item(i)));
 			}
 			final var layerNodes = document.getElementsByTagName("NeuralLayer");
 			for (int l = 0; l < layerNodes.getLength(); l++) {
@@ -225,13 +262,27 @@ class ModelExportTest {
 			final var outputs = document.getElementsByTagName("NeuralOutput");
 			for (int o = 0; o < outputs.getLength(); o++) {
 				outputIds.add(((Element) outputs.item(o)).getAttribute("outputNeuron"));
+				outputNorms.add(norm((Element) outputs.item(o)));
 			}
+		}
+
+		private static double[] norm(Element field) {
+			final var points = field.getElementsByTagName("LinearNorm");
+			if (points.getLength() == 0) {
+				return null;
+			}
+			assertEquals(2, points.getLength());
+			assertEquals("0", ((Element) points.item(0)).getAttribute("norm"));
+			assertEquals("1", ((Element) points.item(1)).getAttribute("norm"));
+			return new double[] { Double.parseDouble(((Element) points.item(0)).getAttribute("orig")),
+					Double.parseDouble(((Element) points.item(1)).getAttribute("orig")) };
 		}
 
 		double[] evaluate(float[] input) {
 			final var values = new LinkedHashMap<String, Double>();
 			for (int i = 0; i < input.length; i++) {
-				values.put(inputIds.get(i), (double) input[i]);
+				final double[] norm = inputNorms.get(i);
+				values.put(inputIds.get(i), norm == null ? input[i] : (input[i] - norm[0]) / (norm[1] - norm[0]));
 			}
 			for (var layer : layers) {
 				final var next = new LinkedHashMap<String, Double>();
@@ -251,7 +302,13 @@ class ModelExportTest {
 				}
 				values.putAll(next);
 			}
-			return outputIds.stream().mapToDouble(values::get).toArray();
+			final double[] result = new double[outputIds.size()];
+			for (int o = 0; o < result.length; o++) {
+				final double[] norm = outputNorms.get(o);
+				final double value = values.get(outputIds.get(o));
+				result[o] = norm == null ? value : norm[0] + value * (norm[1] - norm[0]);
+			}
+			return result;
 		}
 	}
 }

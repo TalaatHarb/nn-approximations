@@ -32,11 +32,18 @@ public record ModelDefinition(String modelType, int formatVersion, String name, 
 		REGRESSION,
 		/** Targets in {0, 1}; predictions are thresholded at 0.5 for display. */
 		@JsonProperty("classification")
-		CLASSIFICATION;
+		CLASSIFICATION,
+		/** Images in, one-hot class out; the predicted class is the strongest output. */
+		@JsonProperty("imageClassification")
+		IMAGE_CLASSIFICATION;
 
 		@Override
 		public String toString() {
-			return this == REGRESSION ? "Regression" : "Classification";
+			return switch (this) {
+				case REGRESSION -> "Regression";
+				case CLASSIFICATION -> "Classification";
+				case IMAGE_CLASSIFICATION -> "Image classification";
+			};
 		}
 	}
 
@@ -74,6 +81,21 @@ public record ModelDefinition(String modelType, int formatVersion, String name, 
 			errors.add("dataset is required");
 		} else {
 			dataset.validate(errors);
+			if (task == Task.IMAGE_CLASSIFICATION != dataset instanceof HuggingFaceDataset) {
+				errors.add(task == Task.IMAGE_CLASSIFICATION
+						? "task imageClassification needs an image dataset (type huggingFace)"
+						: "image datasets (type huggingFace) need task imageClassification");
+			}
+			if (dataset instanceof HuggingFaceTableDataset table) {
+				if (table.isCategorical() && task != Task.CLASSIFICATION) {
+					errors.add("a categorical target (dataset.classes) needs task classification");
+				}
+				if (task == Task.CLASSIFICATION && !table.isCategorical()
+						&& table.targetScaling() != DataScaling.Mode.NONE) {
+					errors.add("classification with a numeric 0/1 target needs dataset.targetScaling none"
+							+ " (or list dataset.classes)");
+				}
+			}
 			if (network != null && !network.layers().isEmpty()) {
 				if (dataset.inputSize() != network.inputs()) {
 					errors.add("dataset has " + dataset.inputSize() + " input(s) but network.inputs is "
@@ -144,6 +166,11 @@ public record ModelDefinition(String modelType, int formatVersion, String name, 
 	@JsonIgnore
 	public boolean isClassification() {
 		return task == Task.CLASSIFICATION;
+	}
+
+	@JsonIgnore
+	public boolean isImageClassification() {
+		return task == Task.IMAGE_CLASSIFICATION;
 	}
 
 	public ModelDefinition withName(String newName) {

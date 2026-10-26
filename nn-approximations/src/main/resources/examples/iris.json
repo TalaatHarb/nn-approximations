@@ -1,0 +1,27 @@
+{
+  "modelType" : "feedForward",
+  "formatVersion" : 1,
+  "name" : "Iris species",
+  "description" : "Classic tabular classification from Hugging Face (scikit-learn/iris): four flower measurements in cm predict one of three species. 30 shuffled rows are held out for testing.",
+  "task" : "classification",
+  "network" : {
+    "inputs" : 4,
+    "layers" : [ { "neurons" : 8, "activation" : "tanh" }, { "neurons" : 3, "activation" : "sigmoid" } ]
+  },
+  "initialization" : { "scheme" : "xavierUniform", "seed" : 7 },
+  "training" : { "learningRate" : 0.1, "targetLoss" : 0.01, "maxEpochs" : 300, "shuffleSeed" : 7 },
+  "dataset" : {
+    "type" : "huggingFaceTable",
+    "repository" : "scikit-learn/iris",
+    "config" : "default",
+    "split" : "train",
+    "inputColumns" : [ "SepalLengthCm", "SepalWidthCm", "PetalLengthCm", "PetalWidthCm" ],
+    "targetColumn" : "Species",
+    "classes" : [ "Iris-setosa", "Iris-versicolor", "Iris-virginica" ],
+    "samples" : 120,
+    "testSamples" : 30,
+    "seed" : 42,
+    "inputScaling" : "standardize",
+    "targetScaling" : "none"
+  }
+}

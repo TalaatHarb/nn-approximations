@@ -1,0 +1,27 @@
+{
+  "modelType" : "feedForward",
+  "formatVersion" : 1,
+  "name" : "California housing",
+  "description" : "Tabular regression from Hugging Face (gvlassis/california_housing): eight census block features predict the median house value (in 100,000 USD). Inputs and target are standardized; the test split measures generalization.",
+  "task" : "regression",
+  "network" : {
+    "inputs" : 8,
+    "layers" : [ { "neurons" : 16, "activation" : "tanh" }, { "neurons" : 1, "activation" : "linear" } ]
+  },
+  "initialization" : { "scheme" : "xavierUniform", "seed" : 11 },
+  "training" : { "learningRate" : 0.01, "targetLoss" : 0.2, "maxEpochs" : 100, "shuffleSeed" : 11 },
+  "dataset" : {
+    "type" : "huggingFaceTable",
+    "repository" : "gvlassis/california_housing",
+    "config" : "default",
+    "split" : "train",
+    "inputColumns" : [ "MedInc", "HouseAge", "AveRooms", "AveBedrms", "Population", "AveOccup", "Latitude", "Longitude" ],
+    "targetColumn" : "MedHouseVal",
+    "samples" : 5000,
+    "testSplit" : "test",
+    "testSamples" : 500,
+    "seed" : 42,
+    "inputScaling" : "standardize",
+    "targetScaling" : "standardize"
+  }
+}

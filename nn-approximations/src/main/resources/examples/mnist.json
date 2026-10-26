@@ -1,0 +1,26 @@
+{
+  "modelType" : "feedForward",
+  "formatVersion" : 1,
+  "name" : "MNIST handwritten digits",
+  "description" : "28x28 grayscale digit images from Hugging Face (ylecun/mnist) classified into 0-9.",
+  "task" : "imageClassification",
+  "network" : {
+    "inputs" : 784,
+    "layers" : [ { "neurons" : 32, "activation" : "sigmoid" }, { "neurons" : 10, "activation" : "sigmoid" } ]
+  },
+  "initialization" : { "scheme" : "xavierUniform", "seed" : 42 },
+  "training" : { "learningRate" : 0.3, "targetLoss" : 0.01, "maxEpochs" : 30, "shuffleSeed" : 42 },
+  "dataset" : {
+    "type" : "huggingFace",
+    "repository" : "ylecun/mnist",
+    "config" : "mnist",
+    "split" : "train",
+    "imageColumn" : "image",
+    "labelColumn" : "label",
+    "classes" : [ "0", "1", "2", "3", "4", "5", "6", "7", "8", "9" ],
+    "samples" : 2000,
+    "testSplit" : "test",
+    "testSamples" : 500,
+    "image" : { "width" : 28, "height" : 28, "grayscale" : true }
+  }
+}

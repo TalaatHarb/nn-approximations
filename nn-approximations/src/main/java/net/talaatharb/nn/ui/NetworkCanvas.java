@@ -10,6 +10,7 @@ import javafx.beans.property.ReadOnlyStringWrapper;
 import javafx.geometry.VPos;
 import javafx.scene.canvas.Canvas;
 import javafx.scene.canvas.GraphicsContext;
+import javafx.scene.image.WritableImage;
 import javafx.scene.layout.Region;
 import javafx.scene.paint.Color;
 import javafx.scene.text.Font;
@@ -43,6 +44,21 @@ public class NetworkCanvas extends Region {
 	private static final double MARGIN_X = 70;
 	private static final double MARGIN_TOP = 44;
 	private static final double MARGIN_BOTTOM = 22;
+	private static final double TILE_LEFT = 14;
+
+	/**
+	 * Draws the input layer as a width x height picture (channels 1 = grayscale, 3 = RGB interleaved per
+	 * pixel) instead of one circle per pixel; {@code classes} label the output units.
+	 */
+	public record ImageLayout(int width, int height, int channels, List<String> classes) {
+		public ImageLayout {
+			classes = classes == null ? List.of() : List.copyOf(classes);
+		}
+
+		int pixels() {
+			return width * height;
+		}
+	}
 
 	private final Canvas canvas = new Canvas();
 	private final ReadOnlyStringWrapper detail = new ReadOnlyStringWrapper(this, "detail", "");
@@ -54,6 +70,7 @@ public class NetworkCanvas extends Region {
 	private EdgeMode mode = EdgeMode.WEIGHTS;
 	private int hoverLayer = -1;
 	private int hoverUnit = -1;
+	private ImageLayout image;
 
 	public NetworkCanvas() {
 		getChildren().add(canvas);
@@ -101,6 +118,24 @@ public class NetworkCanvas extends Region {
 		draw();
 	}
 
+	/** Switches the input layer to a picture (null restores one circle per input). */
+	public void setImageLayout(ImageLayout layout) {
+		this.image = layout;
+		hoverLayer = -1;
+		hoverUnit = -1;
+		draw();
+		updateDetail();
+	}
+
+	public ImageLayout imageLayout() {
+		return image;
+	}
+
+	private boolean imageMode() {
+		return image != null && current != null && current.layers().size() > 1
+				&& current.layers().get(0).units().size() == image.pixels() * image.channels();
+	}
+
 	public EdgeMode mode() {
 		return mode;
 	}
@@ -120,8 +155,38 @@ public class NetworkCanvas extends Region {
 		}
 	}
 
+	/** Side of the square that holds the input picture (and, below it, the receptive field). */
+	private double tileBox() {
+		final double usable = canvas.getHeight() - MARGIN_TOP - MARGIN_BOTTOM;
+		return Math.max(24, Math.min(Math.min((usable - 30) / 2, canvas.getWidth() * 0.26), 190));
+	}
+
+	private double tileWidth() {
+		return tileBox() * image.width() / Math.max(image.width(), image.height());
+	}
+
+	private double tileHeight() {
+		return tileBox() * image.height() / Math.max(image.width(), image.height());
+	}
+
+	private double tileY() {
+		return MARGIN_TOP + 4;
+	}
+
+	private double fieldY() {
+		return tileY() + tileBox() + 24;
+	}
+
 	private double columnX(int layer) {
 		final int count = current.layers().size();
+		if (imageMode()) {
+			if (layer == 0) {
+				return TILE_LEFT + tileWidth() / 2;
+			}
+			final double left = TILE_LEFT + tileBox() + 80;
+			final double right = canvas.getWidth() - MARGIN_X;
+			return count == 2 ? (left + right) / 2 : left + (right - left) * (layer - 1) / (count - 2);
+		}
 		final double usable = canvas.getWidth() - 2 * MARGIN_X;
 		return count == 1 ? canvas.getWidth() / 2 : MARGIN_X + usable * layer / (count - 1);
 	}
@@ -133,11 +198,14 @@ public class NetworkCanvas extends Region {
 	}
 
 	private double radius() {
-		final int maxUnits = current.layers().stream().mapToInt(layer -> layer.units().size()).max().orElse(1);
+		final int first = imageMode() ? 1 : 0;
+		final int maxUnits = current.layers().stream().skip(first).mapToInt(layer -> layer.units().size()).max()
+				.orElse(1);
 		final double vertical = (canvas.getHeight() - MARGIN_TOP - MARGIN_BOTTOM) / maxUnits * 0.38;
-		final double horizontal = (canvas.getWidth() - 2 * MARGIN_X) / Math.max(1, current.layers().size() - 1)
-				* 0.16;
-		return Math.max(2.5, Math.min(22, Math.min(vertical, horizontal)));
+		final double span = imageMode() ? (canvas.getWidth() - TILE_LEFT - tileBox() - 80 - MARGIN_X)
+				/ Math.max(1, current.layers().size() - 2) : (canvas.getWidth() - 2 * MARGIN_X)
+						/ Math.max(1, current.layers().size() - 1);
+		return Math.max(2.5, Math.min(22, Math.min(vertical, span * 0.16)));
 	}
 
 	private float edgeValue(int index) {
@@ -152,16 +220,25 @@ public class NetworkCanvas extends Region {
 		if (current == null) {
 			return;
 		}
+		final boolean pictures = imageMode();
 		final double r = radius();
 		final var connections = current.connections();
 		float max = 1e-12f;
 		for (int i = 0; i < connections.size(); i++) {
-			max = Math.max(max, Math.abs(edgeValue(i)));
+			if (!pictures || connections.get(i).sourceLayer() > 0) {
+				max = Math.max(max, Math.abs(edgeValue(i)));
+			}
 		}
-		final boolean hovering = hoverLayer >= 0;
+		final boolean hovering = hoverLayer >= 0 && !(pictures && hoverLayer == 0);
+		if (pictures) {
+			drawFan(g);
+		}
 		for (int pass = 0; pass < 2; pass++) {
 			for (int i = 0; i < connections.size(); i++) {
 				final var c = connections.get(i);
+				if (pictures && c.sourceLayer() == 0) {
+					continue;
+				}
 				final boolean touches = touchesHover(c);
 				if (hovering && (pass == 0) == touches) {
 					continue;
@@ -193,7 +270,15 @@ public class NetworkCanvas extends Region {
 			g.fillText(caption(l), columnX(l), 16);
 			g.setFill(Color.GRAY);
 			g.setFont(Font.font(10.5));
+			if (pictures && l == 0) {
+				g.fillText(image.width() + "×" + image.height() + (image.channels() == 1 ? " pixels" : " RGB pixels"),
+						columnX(l), 31);
+				drawInputTile(g);
+				continue;
+			}
 			g.fillText(layer.units().size() + (layer.units().size() == 1 ? " unit" : " units"), columnX(l), 31);
+			final boolean last = l == current.layers().size() - 1;
+			final int strongest = pictures && last && revealed ? strongest(layer) : -1;
 			for (int u = 0; u < layer.units().size(); u++) {
 				final var unit = layer.units().get(u);
 				final double x = columnX(l);
@@ -227,6 +312,15 @@ public class NetworkCanvas extends Region {
 					g.fillText(inputNames.get(u), x - r - 6, y);
 					g.setTextAlign(TextAlignment.CENTER);
 				}
+				if (pictures && last && u < image.classes().size()) {
+					g.setFill(u == strongest ? Color.BLACK : Color.rgb(90, 90, 90));
+					g.setTextAlign(TextAlignment.LEFT);
+					g.setFont(u == strongest ? Font.font("System", javafx.scene.text.FontWeight.BOLD, 12)
+							: Font.font(11));
+					final String label = image.classes().get(u);
+					g.fillText(label.length() > 10 ? label.substring(0, 9) + "…" : label, x + r + 6, y);
+					g.setTextAlign(TextAlignment.CENTER);
+				}
 			}
 		}
 		g.setTextAlign(TextAlignment.LEFT);
@@ -234,6 +328,134 @@ public class NetworkCanvas extends Region {
 		g.setFont(Font.font(10.5));
 		g.fillText(String.format(Locale.ROOT, "%s | max |%s| = %.4g", showsChanges() ? "Edges: Δweight of last update"
 				: "Edges: weights", showsChanges() ? "Δw" : "w", max), 8, canvas.getHeight() - 10);
+	}
+
+	private static int strongest(NetworkSnapshot.Layer layer) {
+		int best = 0;
+		for (int u = 1; u < layer.units().size(); u++) {
+			best = layer.units().get(u).activation() > layer.units().get(best).activation() ? u : best;
+		}
+		return best;
+	}
+
+	/** Pixel values of layer 0 as a picture (dark ink on white for grayscale). */
+	private void drawInputTile(GraphicsContext g) {
+		final var units = current.layers().get(0).units();
+		final var picture = new WritableImage(image.width(), image.height());
+		final var writer = picture.getPixelWriter();
+		final int channels = image.channels();
+		for (int y = 0; y < image.height(); y++) {
+			for (int x = 0; x < image.width(); x++) {
+				final int base = (y * image.width() + x) * channels;
+				if (channels == 1) {
+					writer.setColor(x, y, Color.gray(1 - clamp(units.get(base).activation())));
+				} else {
+					writer.setColor(x, y, Color.color(clamp(units.get(base).activation()),
+							clamp(units.get(base + 1).activation()), clamp(units.get(base + 2).activation())));
+				}
+			}
+		}
+		final double tw = tileWidth();
+		final double th = tileHeight();
+		g.setImageSmoothing(false);
+		g.drawImage(picture, TILE_LEFT, tileY(), tw, th);
+		g.setStroke(hoverLayer == 0 ? Color.BLACK : Color.gray(0.55));
+		g.setLineWidth(1);
+		g.strokeRect(TILE_LEFT - 0.5, tileY() - 0.5, tw + 1, th + 1);
+		drawReceptiveField(g);
+	}
+
+	/** Incoming weights (or their last change) of the hovered first hidden unit, laid out as an image. */
+	private void drawReceptiveField(GraphicsContext g) {
+		final double tw = tileWidth();
+		final double th = tileHeight();
+		final double top = fieldY();
+		g.setTextAlign(TextAlignment.LEFT);
+		g.setFont(Font.font(10.5));
+		g.setFill(Color.GRAY);
+		if (hoverLayer != 1) {
+			g.fillText("Hover a " + caption(1) + " unit", TILE_LEFT, top - 9);
+			g.fillText("to see its input weights", TILE_LEFT, top + 6);
+			g.setTextAlign(TextAlignment.CENTER);
+			return;
+		}
+		final float[] field = new float[image.pixels()];
+		for (int i = 0; i < current.connections().size(); i++) {
+			final var c = current.connections().get(i);
+			if (c.sourceLayer() == 0 && c.targetUnit() == hoverUnit) {
+				field[c.sourceUnit() / image.channels()] += edgeValue(i);
+			}
+		}
+		float max = 1e-12f;
+		for (float value : field) {
+			max = Math.max(max, Math.abs(value));
+		}
+		final var picture = new WritableImage(image.width(), image.height());
+		final var writer = picture.getPixelWriter();
+		for (int p = 0; p < field.length; p++) {
+			writer.setColor(p % image.width(), p / image.width(),
+					field[p] >= 0 ? Color.WHITE.interpolate(POSITIVE, field[p] / max)
+							: Color.WHITE.interpolate(NEGATIVE, -field[p] / max));
+		}
+		g.fillText((showsChanges() ? "Δ input weights of " : "Input weights of ") + caption(1) + " #"
+				+ (hoverUnit + 1), TILE_LEFT, top - 9);
+		g.setImageSmoothing(false);
+		g.drawImage(picture, TILE_LEFT, top, tw, th);
+		g.setStroke(Color.gray(0.55));
+		g.strokeRect(TILE_LEFT - 0.5, top - 0.5, tw + 1, th + 1);
+		g.fillText(String.format(Locale.ROOT, "blue +, red −, max |%s| %.3g", showsChanges() ? "Δw" : "w", max),
+				TILE_LEFT, top + th + 10);
+		g.setTextAlign(TextAlignment.CENTER);
+	}
+
+	/**
+	 * One line per first-layer unit instead of thousands of pixel edges: width shows the norm of its
+	 * input weights (or of their change), colour the sign of the weighted input it currently receives.
+	 */
+	private void drawFan(GraphicsContext g) {
+		final int hidden = current.layers().get(1).units().size();
+		final double[] norm = new double[hidden];
+		final double[] drive = new double[hidden];
+		final var inputs = current.layers().get(0).units();
+		for (int i = 0; i < current.connections().size(); i++) {
+			final var c = current.connections().get(i);
+			if (c.sourceLayer() == 0) {
+				final float value = edgeValue(i);
+				norm[c.targetUnit()] += value * value;
+				drive[c.targetUnit()] += value * inputs.get(c.sourceUnit()).activation();
+			}
+		}
+		double max = 1e-12;
+		for (int u = 0; u < hidden; u++) {
+			norm[u] = Math.sqrt(norm[u]);
+			max = Math.max(max, norm[u]);
+		}
+		final double startX = TILE_LEFT + tileWidth() + 2;
+		final double startY = tileY() + tileHeight() / 2;
+		for (int u = 0; u < hidden; u++) {
+			final double strength = norm[u] / max;
+			final boolean hovered = hoverLayer == 1 && hoverUnit == u;
+			final double alpha = hoverLayer >= 1 && !hovered ? 0.05 : 0.1 + 0.5 * strength;
+			g.setStroke((drive[u] >= 0 ? POSITIVE : NEGATIVE).deriveColor(0, 1, 1, hovered ? 0.9 : alpha));
+			g.setLineWidth(hovered ? 3 : 0.5 + 3 * strength);
+			g.strokeLine(startX, startY, columnX(1), rowY(1, u));
+		}
+	}
+
+	private static double clamp(float value) {
+		return Math.max(0, Math.min(1, value));
+	}
+
+	/** Pixel index under (x, y) in the input picture, or -1. */
+	private int pixelAt(double x, double y) {
+		final double tw = tileWidth();
+		final double th = tileHeight();
+		if (x < TILE_LEFT || y < tileY() || x >= TILE_LEFT + tw || y >= tileY() + th) {
+			return -1;
+		}
+		final int px = Math.min(image.width() - 1, (int) ((x - TILE_LEFT) / tw * image.width()));
+		final int py = Math.min(image.height() - 1, (int) ((y - tileY()) / th * image.height()));
+		return py * image.width() + px;
 	}
 
 	private float maxBias() {
@@ -273,7 +495,13 @@ public class NetworkCanvas extends Region {
 		int layer = -1;
 		int unit = -1;
 		double best = Double.MAX_VALUE;
-		for (int l = 0; l < current.layers().size(); l++) {
+		final boolean pictures = imageMode();
+		final int pixel = pictures ? pixelAt(x, y) : -1;
+		if (pixel >= 0) {
+			layer = 0;
+			unit = pixel * image.channels();
+		}
+		for (int l = pictures ? 1 : 0; l < current.layers().size() && pixel < 0; l++) {
 			if (Math.abs(columnX(l) - x) > r + 4) {
 				continue;
 			}
@@ -301,6 +529,19 @@ public class NetworkCanvas extends Region {
 		}
 		final var unit = current.layers().get(hoverLayer).units().get(hoverUnit);
 		final var text = new StringBuilder();
+		if (hoverLayer == 0 && imageMode()) {
+			final int pixel = hoverUnit / image.channels();
+			text.append(String.format(Locale.ROOT, "Pixel (x %d, y %d) = %.3f", pixel % image.width(),
+					pixel / image.width(), unit.activation()));
+			if (image.channels() == 3) {
+				final var units = current.layers().get(0).units();
+				text.append(String.format(Locale.ROOT, " (r), g %.3f, b %.3f", units.get(hoverUnit + 1).activation(),
+						units.get(hoverUnit + 2).activation()));
+			}
+			text.append("\nHover a first hidden unit to see which pixels drive it.");
+			detail.set(text.toString());
+			return;
+		}
 		text.append(caption(hoverLayer)).append(", unit ").append(hoverUnit + 1).append(": ");
 		if (hoverLayer == 0) {
 			text.append(String.format(Locale.ROOT, "input %s = %.4f", hoverUnit < inputNames.size()

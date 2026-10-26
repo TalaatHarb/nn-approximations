@@ -35,6 +35,7 @@ import javafx.scene.control.MenuItem;
 import javafx.scene.control.Separator;
 import javafx.scene.control.SeparatorMenuItem;
 import javafx.scene.control.Slider;
+import javafx.scene.control.ScrollPane;
 import javafx.scene.control.SplitPane;
 import javafx.scene.control.TextArea;
 import javafx.scene.control.TextField;
@@ -49,10 +50,14 @@ import javafx.stage.Stage;
 import net.talaatharb.nn.algorithms.StochasticGradientDescent;
 import net.talaatharb.nn.algorithms.TrainingListener;
 import net.talaatharb.nn.algorithms.TrainingUpdate;
+import net.talaatharb.nn.config.DataScaling;
 import net.talaatharb.nn.config.ExampleCatalog;
+import net.talaatharb.nn.config.HuggingFaceDataset;
+import net.talaatharb.nn.config.HuggingFaceTableDataset;
 import net.talaatharb.nn.config.InitializationSpec;
 import net.talaatharb.nn.config.ModelDefinition;
 import net.talaatharb.nn.config.ModelJson;
+import net.talaatharb.nn.data.DatasetCache;
 import net.talaatharb.nn.export.OnnxExporter;
 import net.talaatharb.nn.export.PmmlExporter;
 import net.talaatharb.nn.metrics.MeanSquareError;
@@ -87,6 +92,16 @@ public class NetworkVisualizationApplication extends Application {
 
 	private static final int MAX_LOSS_POINTS = 800;
 	private static final long SURFACE_INTERVAL_NANOS = 120_000_000L;
+	/** Image models update far faster than the screen; only every ~30 ms one update is captured for display. */
+	private static final long IMAGE_OBSERVE_INTERVAL_NANOS = 30_000_000L;
+	private static final int MAX_RESULT_ROWS = 200;
+	private static final String NUMERIC_INPUT = "Input (comma separated)";
+	private static final String IMAGE_INPUT = "Sample (train:N, test:N or image file)";
+	private static final String TABLE_INPUT = "Raw column values or train:N / test:N";
+	/** Datasets larger than this train at full speed with throttled visual updates. */
+	private static final int LARGE_DATASET = 500;
+	private static final int MAX_CHART_POINTS = 400;
+	private static final java.util.regex.Pattern SAMPLE_ID = java.util.regex.Pattern.compile("(train|test):(\\d+)");
 
 	private final ComboBox<ExampleCatalog.Entry> models = new ComboBox<>();
 	private final Button newModel = new Button("New");
@@ -123,6 +138,10 @@ public class NetworkVisualizationApplication extends Application {
 
 	private final TextField input = new TextField();
 	private final Button infer = new Button("Infer");
+	private final Label inputLabel = new Label(NUMERIC_INPUT);
+	private final Button browse = new Button("Browse…");
+	private final Slider speed = new Slider(0, 200, 15);
+	private final ImageClassificationView imageView = new ImageClassificationView();
 	private final Label status = new Label("Ready");
 	private final Label output = new Label();
 	private final Label detail = new Label();
@@ -152,6 +171,16 @@ public class NetworkVisualizationApplication extends Application {
 	private ExampleCatalog catalog;
 	private ModelDefinition model;
 	private TrainingData data;
+	/** Held-out samples of image models (null when there is no test split). */
+	private TrainingData testData;
+	private List<DatasetCache.ImageSample> trainImages = List.of();
+	/** Raw column values = scaling applied in reverse to what the network sees (identity except for tables). */
+	private DataScaling scaling = DataScaling.identity(1, 1);
+	private boolean autoFastSpeed;
+	private List<DatasetCache.ImageSample> testImages = List.of();
+	private List<float[]> lastTestPredictions = List.of();
+	private HBox outputRow;
+	private int loadGeneration;
 	private FeedForwardNN network;
 	private List<float[]> lastPredictions = List.of();
 	private OutputSurface.Grid lastGrid;
@@ -174,7 +203,12 @@ public class NetworkVisualizationApplication extends Application {
 	private MlflowRunLogger runLogger;
 	private String lastRunUrl;
 
-	private record EpochState(int epoch, float loss, List<float[]> predictions, OutputSurface.Grid grid) {
+	private record EpochState(int epoch, float loss, List<float[]> predictions, List<float[]> testPredictions,
+			OutputSurface.Grid grid) {
+	}
+
+	private record PreparedData(TrainingData train, TrainingData test, List<DatasetCache.ImageSample> trainSamples,
+			List<DatasetCache.ImageSample> testSamples) {
 	}
 
 	@Override
@@ -228,6 +262,7 @@ public class NetworkVisualizationApplication extends Application {
 		edgeMode.setTooltip(new Tooltip("Colour/width edges by weight or by the change made in the last update"));
 		results.setEditable(false);
 		results.setPrefRowCount(8);
+		results.setMinHeight(160);
 		results.setStyle("-fx-font-family: monospace;");
 		output.setWrapText(true);
 		status.setWrapText(true);
@@ -265,7 +300,19 @@ public class NetworkVisualizationApplication extends Application {
 		lockedWhileTraining.addAll(List.of(models, newModel, edit, duplicate, delete, importModel, export, viewJson,
 				rate, epochs,
 				threshold, train, scheme, initMin, initMax, seed, randomize, reset, storeWeights, clearWeights, input,
-				infer, outputSelector, trackRuns, trackingSettings));
+				infer, browse, outputSelector, trackRuns, trackingSettings));
+		browse.setVisible(false);
+		browse.setManaged(false);
+		browse.setTooltip(new Tooltip("Classify an image file from disk (resized to the model's input size)"));
+		imageView.setVisible(false);
+		imageView.setOnSampleSelected(id -> {
+			if (active) {
+				status.setText("Pause is not enough: stop training to inspect " + id);
+				return;
+			}
+			input.setText(id);
+			infer();
+		});
 	}
 
 	private static MenuItem menuItem(String text, Runnable action) {
@@ -275,9 +322,9 @@ public class NetworkVisualizationApplication extends Application {
 	}
 
 	private VBox header() {
-		final var speed = new Slider(0, 200, delayMillis);
 		speed.setPrefWidth(140);
 		final var speedLabel = new Label("15 ms/update");
+		speedLabel.setMinWidth(javafx.scene.layout.Region.USE_PREF_SIZE);
 		speed.valueProperty().addListener((observable, oldValue, value) -> {
 			delayMillis = value.intValue();
 			speedLabel.setText(delayMillis + " ms/update");
@@ -325,7 +372,7 @@ public class NetworkVisualizationApplication extends Application {
 		legend.setStyle("-fx-text-fill: #555;");
 		final var graphPane = new VBox(8, graph, detail, legend,
 				row(layerLabel, layer, next, all, new Label("Edges"), edgeMode, before),
-				row(new Label("Input (comma separated)"), input, infer), output);
+				row(inputLabel, input, infer, browse), output);
 		VBox.setVgrow(graph, Priority.ALWAYS);
 		graphPane.setPadding(new Insets(10));
 
@@ -335,14 +382,25 @@ public class NetworkVisualizationApplication extends Application {
 		predictions.setName("Prediction");
 		decision.setName("0.5 threshold");
 		functionChart.getData().addAll(List.of(targets, predictions));
-		final var outputs = new StackPane(functionChart, surface);
+		final var outputs = new StackPane(functionChart, surface, imageView);
+		// Hidden views must not count toward the panel's minimum height.
+		for (var view : outputs.getChildren()) {
+			view.managedProperty().bind(view.visibleProperty());
+		}
+		StackPane.setAlignment(imageView, Pos.TOP_LEFT);
 		VBox.setVgrow(outputs, Priority.ALWAYS);
-		final var charts = new VBox(6, row(new Label("Loss"), logLoss), lossChart,
-				row(new Label("Output"), outputSelector), outputs, results);
+		outputRow = row(new Label("Output"), outputSelector);
+		final var charts = new VBox(6, row(new Label("Loss"), logLoss), lossChart, outputRow, outputs, results);
 		VBox.setVgrow(lossChart, Priority.SOMETIMES);
 		charts.setPadding(new Insets(10));
 		charts.setMinWidth(360);
-		final var split = new SplitPane(graphPane, charts);
+		// Fills the panel when there is room; scrolls once the charts and results reach their minimum heights.
+		final var chartsScroll = new ScrollPane(charts);
+		chartsScroll.setFitToWidth(true);
+		chartsScroll.setFitToHeight(true);
+		chartsScroll.setHbarPolicy(ScrollPane.ScrollBarPolicy.NEVER);
+		chartsScroll.setMinWidth(380);
+		final var split = new SplitPane(graphPane, chartsScroll);
 		split.setDividerPositions(0.56);
 		return split;
 	}
@@ -395,8 +453,12 @@ public class NetworkVisualizationApplication extends Application {
 		});
 		newModel.setOnAction(event -> editModel(null, template(), "New model"));
 		viewJson.setOnAction(event -> new JsonViewer(stage, model, network.copyWeights()).show());
-		edit.setOnAction(event -> editModel(models.getValue(), model, "Edit " + model.name()));
-		duplicate.setOnAction(event -> editModel(null, model.withName(model.name() + " copy"), "Duplicate model"));
+		// The selected entry (not the displayed model) so a model whose dataset failed to load can be fixed.
+		edit.setOnAction(event -> editModel(models.getValue(), models.getValue().model(),
+				"Edit " + models.getValue().model().name()));
+		duplicate.setOnAction(event -> editModel(null,
+				models.getValue().model().withName(models.getValue().model().name() + " copy"), "Duplicate model"));
+		browse.setOnAction(event -> browseImage());
 		delete.setOnAction(event -> deleteModel());
 		importModel.setOnAction(event -> importModel());
 		randomize.setOnAction(event -> randomizeWeights());
@@ -447,8 +509,105 @@ public class NetworkVisualizationApplication extends Application {
 	}
 
 	private void loadModel(ExampleCatalog.Entry entry) {
+		final int generation = ++loadGeneration;
+		if (entry.model().dataset() instanceof HuggingFaceDataset images) {
+			prepareDataset(entry, images.repository() + " (" + images.config() + "/" + images.split() + ")",
+					generation, report -> {
+						images.fetch((message, fraction) -> report.accept(message
+								+ (fraction >= 0 ? String.format(Locale.ROOT, " (%.0f%%)", 100 * fraction) : "")));
+						final var train = images.trainingSamples();
+						final var test = images.heldOutSamples();
+						report.accept("Decoding " + (train.size() + test.size()) + " images of " + images.repository()
+								+ "…");
+						return new PreparedData(images.toTrainingData(train),
+								test.isEmpty() ? null : images.toTrainingData(test), train, test);
+					});
+		} else if (entry.model().dataset() instanceof HuggingFaceTableDataset table) {
+			prepareDataset(entry, table.repository() + " (" + table.config() + "/" + table.split() + ")", generation,
+					report -> {
+						table.fetch((message, fraction) -> report.accept(message
+								+ (fraction >= 0 ? String.format(Locale.ROOT, " (%.0f%%)", 100 * fraction) : "")));
+						report.accept("Reading rows of " + table.repository() + "…");
+						final var prepared = table.prepare();
+						return new PreparedData(prepared.train(), prepared.test(), List.of(), List.of());
+					});
+		} else {
+			applyModel(entry, entry.model().dataset().toTrainingData(), null, List.of(), List.of());
+		}
+	}
+
+	private interface DatasetWork {
+		PreparedData load(java.util.function.Consumer<String> report) throws Exception;
+	}
+
+	/** Downloads (first time only) and reads a Hugging Face dataset off the FX thread, then shows the model. */
+	private void prepareDataset(ExampleCatalog.Entry entry, String what, int generation, DatasetWork work) {
+		setDatasetPending(true);
+		status.setText("Preparing " + what + " for " + entry.model().name() + "…");
+		final var pendingStatus = new AtomicReference<String>();
+		final java.util.function.Consumer<String> report = text -> {
+			if (pendingStatus.getAndSet(text) == null) {
+				Platform.runLater(() -> {
+					final String latest = pendingStatus.getAndSet(null);
+					if (latest != null && generation == loadGeneration) {
+						status.setText(latest);
+					}
+				});
+			}
+		};
+		final var task = new Task<PreparedData>() {
+			@Override
+			protected PreparedData call() throws Exception {
+				return work.load(report);
+			}
+		};
+		task.setOnSucceeded(event -> {
+			if (generation == loadGeneration) {
+				final var prepared = task.getValue();
+				applyModel(entry, prepared.train(), prepared.test(), prepared.trainSamples(), prepared.testSamples());
+			}
+		});
+		task.setOnFailed(event -> {
+			if (generation == loadGeneration) {
+				final var error = task.getException();
+				status.setText("Could not prepare the dataset of " + entry.model().name() + ": "
+						+ (error.getMessage() == null ? error.toString() : error.getMessage())
+						+ ". Fix it with Edit, or select another model and back to retry.");
+			}
+		});
+		final var thread = new Thread(task, "dataset-loader");
+		thread.setDaemon(true);
+		thread.start();
+	}
+
+	/**
+	 * While a dataset loads (or after it failed) the previous network stays on screen but only model
+	 * management is possible.
+	 */
+	private void setDatasetPending(boolean pending) {
+		lockedWhileTraining.forEach(node -> node.setDisable(pending));
+		step.setDisable(pending);
+		if (pending) {
+			for (var node : List.of(models, newModel, edit, duplicate, importModel)) {
+				node.setDisable(false);
+			}
+			final var entry = models.getValue();
+			delete.setDisable(entry == null || entry.source() == ExampleCatalog.Source.BUILT_IN);
+		}
+	}
+
+	private void applyModel(ExampleCatalog.Entry entry, TrainingData trainingData, TrainingData heldOut,
+			List<DatasetCache.ImageSample> trainSamples, List<DatasetCache.ImageSample> testSamples) {
 		model = entry.model();
-		data = model.dataset().toTrainingData();
+		scaling = model.dataset().scaling();
+		data = trainingData;
+		testData = heldOut;
+		trainImages = trainSamples;
+		testImages = testSamples;
+		lastTestPredictions = List.of();
+		setDatasetPending(false);
+		final var images = model.dataset() instanceof HuggingFaceDataset hf ? hf : null;
+		final var table = model.dataset() instanceof HuggingFaceTableDataset rows ? rows : null;
 		final var training = model.training();
 		rate.setText(Float.toString(training.learningRate()));
 		threshold.setText(Float.toString(training.targetLoss()));
@@ -458,7 +617,23 @@ public class NetworkVisualizationApplication extends Application {
 		initMin.setText(Float.toString(init.min()));
 		initMax.setText(Float.toString(init.max()));
 		seed.setText(init.seed() == null ? "" : Long.toString(init.seed()));
-		input.setText(Arrays.toString(data.getInput()[0]).replaceAll("[\\[\\]]", ""));
+		input.setText(images != null ? (testData != null ? "test:0" : "train:0")
+				: table != null ? rawText(scaling.unscaleInput(data.getInput()[0]))
+						: Arrays.toString(data.getInput()[0]).replaceAll("[\\[\\]]", ""));
+		inputLabel.setText(images != null ? IMAGE_INPUT : table != null ? TABLE_INPUT : NUMERIC_INPUT);
+		input.setPrefColumnCount(images != null ? 18 : 12);
+		browse.setVisible(images != null);
+		browse.setManaged(images != null);
+		outputRow.setVisible(images == null);
+		outputRow.setManaged(images == null);
+		// Large datasets would take minutes per epoch with a per-update delay.
+		if (images != null || data.getInput().length > LARGE_DATASET) {
+			speed.setValue(0);
+			autoFastSpeed = true;
+		} else if (autoFastSpeed) {
+			speed.setValue(15);
+			autoFastSpeed = false;
+		}
 		switchingModels = true;
 		try {
 			outputSelector.getItems().setAll(model.dataset().outputNames());
@@ -471,20 +646,42 @@ public class NetworkVisualizationApplication extends Application {
 		delete.setText(entry.source() == ExampleCatalog.Source.MODIFIED_BUILT_IN ? "Restore built-in" : "Delete");
 		delete.setDisable(entry.source() == ExampleCatalog.Source.BUILT_IN);
 		clearWeights.setDisable(model.weights() == null);
-		final boolean twoInputs = model.network().inputs() == 2;
+		final boolean twoInputs = model.network().inputs() == 2 && images == null;
 		surface.setVisible(twoInputs);
-		functionChart.setVisible(!twoInputs);
-		functionChart.getXAxis().setLabel(model.network().inputs() == 1 ? model.dataset().inputNames().get(0)
-				: "sample index");
+		functionChart.setVisible(!twoInputs && images == null);
+		imageView.setVisible(images != null);
+		final var layout = images == null ? null : new NetworkCanvas.ImageLayout(images.image().width(),
+				images.image().height(), images.image().channels(), images.classes());
+		graph.setImageLayout(layout);
+		if (images != null) {
+			final var splits = new ArrayList<ImageClassificationView.Split>();
+			splits.add(new ImageClassificationView.Split("Training", "train", data.getInput(), labels(trainImages)));
+			if (testData != null) {
+				splits.add(new ImageClassificationView.Split("Test", "test", testData.getInput(), labels(testImages)));
+			}
+			imageView.setData(layout, splits);
+		}
+		functionChart.getXAxis().setLabel(table != null ? "training rows sorted by target"
+				: model.network().inputs() == 1 ? model.dataset().inputNames().get(0) : "sample index");
 		functionChart.getData().remove(decision);
 		if (model.isClassification()) {
 			functionChart.getData().add(decision);
 		}
-		summary.setText(String.format(Locale.ROOT, "%s%s  |  %s  |  %d parameters  |  %d samples  |  %s%s",
+		final String samples = table != null ? data.getInput().length + " training"
+				+ (testData == null ? "" : " + " + testData.getInput().length + " test") + " rows from "
+				+ table.repository() + (scaling.isIdentity() ? "" : " (scaled)")
+				: images == null ? data.getInput().length + " samples"
+				: data.getInput().length + " training" + (testData == null ? "" : " + " + testData.getInput().length
+						+ " test") + " images from " + images.repository();
+		summary.setText(String.format(Locale.ROOT, "%s%s  |  %s  |  %d parameters  |  %s  |  %s%s",
 				model.description().isEmpty() ? "" : model.description() + "  |  ", entry.source(),
-				model.network().describe(), model.network().parameterCount(), data.getInput().length,
+				model.network().describe(), model.network().parameterCount(), samples,
 				model.task(), model.weights() != null ? "  |  stored weights" : ""));
 		resetNetwork();
+	}
+
+	private static int[] labels(List<DatasetCache.ImageSample> samples) {
+		return samples.stream().mapToInt(DatasetCache.ImageSample::label).toArray();
 	}
 
 	private ModelDefinition template() {
@@ -677,6 +874,7 @@ public class NetworkVisualizationApplication extends Application {
 		layer.setValue(network.getDepth());
 		setActive(false);
 		lastGrid = computeGrid();
+		lastTestPredictions = predictTest();
 		updatePredictions(predict(), lastGrid);
 		infer();
 	}
@@ -702,7 +900,8 @@ public class NetworkVisualizationApplication extends Application {
 		}
 		final var trainingData = data;
 		final var shuffle = model.training().shuffleRandom();
-		final boolean surfaces = model.network().inputs() == 2;
+		final boolean surfaces = computesSurface();
+		final boolean throttled = model.isImageClassification() || trainingData.getInput().length > LARGE_DATASET;
 		final var bounds = model.dataset().inputBounds();
 		epochOffset = lastEpoch;
 		stopping.set(false);
@@ -722,10 +921,28 @@ public class NetworkVisualizationApplication extends Application {
 			protected Float call() {
 				final var listener = new TrainingListener() {
 					private long lastSurface;
+					private long lastObserved;
 
 					@Override
 					public void beforeUpdate(int epoch, long step, int sampleIndex) {
 						awaitPermission();
+					}
+
+					@Override
+					public boolean observeUpdate(long step) {
+						if (!throttled) {
+							return true;
+						}
+						final long now = System.nanoTime();
+						final boolean stepping;
+						synchronized (control) {
+							stepping = paused;
+						}
+						if (stepping || now - lastObserved >= IMAGE_OBSERVE_INTERVAL_NANOS) {
+							lastObserved = now;
+							return true;
+						}
+						return false;
 					}
 
 					@Override
@@ -744,7 +961,7 @@ public class NetworkVisualizationApplication extends Application {
 							grid = OutputSurface.compute(network, bounds, selectedOutput);
 							lastSurface = now;
 						}
-						latestEpoch.set(new EpochState(epochOffset + epoch, loss, predict(), grid));
+						latestEpoch.set(new EpochState(epochOffset + epoch, loss, predict(), predictTest(), grid));
 					}
 				};
 				return new StochasticGradientDescent(learningRate, shuffle).train(network, trainingData, target,
@@ -802,6 +1019,7 @@ public class NetworkVisualizationApplication extends Application {
 		worker = null;
 		setActive(false);
 		lastGrid = computeGrid();
+		lastTestPredictions = predictTest();
 		final var finalPredictions = predict();
 		updatePredictions(finalPredictions, lastGrid);
 		status.setText(message);
@@ -852,7 +1070,36 @@ public class NetworkVisualizationApplication extends Application {
 		params.put("dataset.type", model.dataset() instanceof net.talaatharb.nn.config.FunctionDataset
 				? "function" : "table");
 		params.put("dataset.samples", Integer.toString(data.getInput().length));
-		params.put("dataset.inputs", String.join(", ", model.dataset().inputNames()));
+		if (model.dataset() instanceof HuggingFaceDataset images) {
+			// 784 pixel names would exceed MLflow's parameter size limit; describe the picture instead.
+			params.put("dataset.type", "huggingFace");
+			params.put("dataset.repository", images.repository());
+			params.put("dataset.config", images.config());
+			params.put("dataset.split", images.split());
+			if (testData != null) {
+				params.put("dataset.test_split", images.testSplit());
+				params.put("dataset.test_samples", Integer.toString(testData.getInput().length));
+			}
+			params.put("dataset.inputs", images.image().width() + "x" + images.image().height() + " "
+					+ (images.image().grayscale() ? "grayscale" : "RGB") + " image");
+		} else if (model.dataset() instanceof HuggingFaceTableDataset table) {
+			params.put("dataset.type", "huggingFaceTable");
+			params.put("dataset.repository", table.repository());
+			params.put("dataset.config", table.config());
+			params.put("dataset.split", table.split());
+			params.put("dataset.target", table.targetColumn());
+			params.put("dataset.seed", Long.toString(table.seed()));
+			params.put("dataset.input_scaling", table.inputScaling().name().toLowerCase(Locale.ROOT));
+			params.put("dataset.target_scaling", table.effectiveTargetScaling().name().toLowerCase(Locale.ROOT));
+			if (testData != null) {
+				params.put("dataset.test_split", table.testSplit() == null ? "held out from " + table.split()
+						: table.testSplit());
+				params.put("dataset.test_samples", Integer.toString(testData.getInput().length));
+			}
+			params.put("dataset.inputs", String.join(", ", model.dataset().inputNames()));
+		} else {
+			params.put("dataset.inputs", String.join(", ", model.dataset().inputNames()));
+		}
 		params.put("dataset.outputs", String.join(", ", model.dataset().outputNames()));
 		final var tags = new LinkedHashMap<String, String>();
 		tags.put("mlflow.source.name", "nn-approximations");
@@ -882,8 +1129,18 @@ public class NetworkVisualizationApplication extends Application {
 		if (!lossHistory.isEmpty() && lastEpoch > epochOffset) {
 			metrics.put("final_loss", (double) lossHistory.get(lossHistory.size() - 1)[1]);
 		}
-		if (model.isClassification()) {
+		if (model.dataset() instanceof HuggingFaceTableDataset) {
+			metrics.putAll(evaluate(data, finalPredictions));
+			if (testData != null) {
+				evaluate(testData, lastTestPredictions).forEach((key, value) -> metrics.put("test_" + key, value));
+			}
+		} else if (model.isClassification()) {
 			metrics.put("accuracy", accuracy(finalPredictions));
+		} else if (model.isImageClassification()) {
+			metrics.put("accuracy", classAccuracy(data, finalPredictions));
+			if (testData != null) {
+				metrics.put("test_accuracy", classAccuracy(testData, lastTestPredictions));
+			}
 		}
 		final var warnings = new ArrayList<String>();
 		final var artifacts = RunArtifacts.build(model, network.copyWeights(), warnings);
@@ -918,6 +1175,20 @@ public class NetworkVisualizationApplication extends Application {
 		return total == 0 ? 0 : (double) correct / total;
 	}
 
+	/** Share of samples whose strongest output is the target class. */
+	private static double classAccuracy(TrainingData samples, List<float[]> predicted) {
+		final float[][] expected = samples.getOutput();
+		if (expected.length == 0 || predicted.size() != expected.length) {
+			return 0;
+		}
+		int correct = 0;
+		for (int i = 0; i < expected.length; i++) {
+			correct += ImageClassificationView.argmax(predicted.get(i)) == ImageClassificationView
+					.argmax(expected[i]) ? 1 : 0;
+		}
+		return (double) correct / expected.length;
+	}
+
 	private void setActive(boolean value) {
 		active = value;
 		lockedWhileTraining.forEach(node -> node.setDisable(value));
@@ -931,6 +1202,7 @@ public class NetworkVisualizationApplication extends Application {
 		}
 		pause.setDisable(!value);
 		stop.setDisable(!value);
+		step.setDisable(false);
 	}
 
 	private void flushUpdates() {
@@ -939,7 +1211,7 @@ public class NetworkVisualizationApplication extends Application {
 			lastUpdate = update;
 			progress = String.format(Locale.ROOT, "Epoch %d, update %d, sample %d | sample MSE %.6f -> %.6f | target %s",
 					epochOffset + update.epoch(), update.step(), update.sampleIndex(), update.lossBefore(),
-					update.lossAfter(), update.expected());
+					update.lossAfter(), describeTarget(update.expected()));
 			showLastUpdate();
 		}
 		final var epoch = latestEpoch.getAndSet(null);
@@ -949,6 +1221,7 @@ public class NetworkVisualizationApplication extends Application {
 			if (epoch.grid() != null) {
 				lastGrid = epoch.grid();
 			}
+			lastTestPredictions = epoch.testPredictions();
 			updatePredictions(epoch.predictions(), lastGrid);
 		}
 	}
@@ -986,12 +1259,218 @@ public class NetworkVisualizationApplication extends Application {
 		if (lastUpdate != null) {
 			displayed = before.isSelected() ? lastUpdate.before() : lastUpdate.after();
 			output.setText(progress + "\nDisplayed " + (before.isSelected() ? "before" : "after")
-					+ " update output: " + displayed.output());
+					+ " update output: " + describeOutput(displayed.output()));
+			if (model.isImageClassification() && lastUpdate.sampleIndex() < data.getInput().length) {
+				final int index = lastUpdate.sampleIndex();
+				imageView.showSample("train:" + index + " (training)", data.getInput()[index],
+						ImageClassificationView.argmax(data.getOutput()[index]), toArray(displayed.output()));
+			}
 			render();
 		}
 	}
 
+	private String targetClass(List<Float> expected) {
+		int best = 0;
+		for (int i = 1; i < expected.size(); i++) {
+			best = expected.get(i) > expected.get(best) ? i : best;
+		}
+		return className(best);
+	}
+
+	private boolean multiClass() {
+		return model.isImageClassification()
+				|| model.dataset() instanceof HuggingFaceTableDataset table && table.isCategorical();
+	}
+
+	private String describeTarget(List<Float> expected) {
+		if (multiClass()) {
+			return "class " + targetClass(expected);
+		}
+		return scaling.scalesOutputs() ? rawText(scaling.unscaleOutput(toArray(expected))) + " (scaled " + expected
+				+ ")" : expected.toString();
+	}
+
+	private String describeOutput(List<Float> outputs) {
+		if (multiClass()) {
+			return describeClasses(outputs);
+		}
+		return scaling.scalesOutputs() ? rawText(scaling.unscaleOutput(toArray(outputs))) + " (network " + outputs
+				+ ")" : outputs.toString();
+	}
+
+	private static String rawText(float[] values) {
+		final var parts = new ArrayList<String>();
+		for (float value : values) {
+			parts.add(String.format(Locale.ROOT, "%.5g", value).replaceAll("(\\.\\d*?)0+(e|$)", "$1$2")
+					.replaceAll("\\.(e|$)", "$1"));
+		}
+		return String.join(", ", parts);
+	}
+
+	private String className(int index) {
+		final var names = model.dataset().outputNames();
+		return index < names.size() ? names.get(index) : Integer.toString(index);
+	}
+
+	private String describeClasses(List<Float> outputs) {
+		final float[] values = toArray(outputs);
+		final int best = ImageClassificationView.argmax(values);
+		return String.format(Locale.ROOT, "predicted %s (score %.3f)", className(best), values[best]);
+	}
+
+	private static float[] toArray(List<Float> values) {
+		final float[] array = new float[values.size()];
+		for (int i = 0; i < array.length; i++) {
+			array[i] = values.get(i);
+		}
+		return array;
+	}
+
+	/** Runs {@code train:N}, {@code test:N} or an image file through the network. */
+	private void inferImage(HuggingFaceDataset images) {
+		final String text = input.getText().trim();
+		final var id = SAMPLE_ID.matcher(text);
+		final float[] values;
+		final int label;
+		final String title;
+		final String source;
+		if (id.matches()) {
+			final boolean test = id.group(1).equals("test");
+			final var set = test ? testData : data;
+			final var samples = test ? testImages : trainImages;
+			if (set == null) {
+				throw new IllegalArgumentException("This model has no test split; use train:N");
+			}
+			final int index;
+			try {
+				index = Integer.parseInt(id.group(2));
+			} catch (NumberFormatException exception) {
+				throw new IllegalArgumentException("Sample index too large");
+			}
+			if (index >= set.getInput().length) {
+				throw new IllegalArgumentException(id.group(1) + " samples are numbered 0 to "
+						+ (set.getInput().length - 1));
+			}
+			values = set.getInput()[index];
+			label = ImageClassificationView.argmax(set.getOutput()[index]);
+			title = text;
+			source = index < samples.size() ? samples.get(index).image().getFileName().toString() : "";
+		} else {
+			final String pathText = text.replaceAll("^\"|\"$", "");
+			final Path path;
+			try {
+				path = Path.of(pathText);
+			} catch (java.nio.file.InvalidPathException exception) {
+				throw new IllegalArgumentException("Enter train:N, test:N or the path of an image file");
+			}
+			if (pathText.isEmpty() || !java.nio.file.Files.isRegularFile(path)) {
+				throw new IllegalArgumentException("Enter train:N, test:N or the path of an image file");
+			}
+			values = images.pixels(path);
+			label = -1;
+			title = path.getFileName().toString();
+			source = path.toString();
+		}
+		displayed = network.inspect(values);
+		lastUpdate = null;
+		before.setSelected(false);
+		final float[] outputs = toArray(displayed.output());
+		imageView.showSample(title, values, label, outputs);
+		output.setText(title + (label >= 0 ? " (label " + className(label) + ")" : "") + " -> "
+				+ describeClasses(displayed.output()) + (source.isEmpty() ? "" : " | " + source));
+		render();
+	}
+
+	/** Runs {@code train:N}, {@code test:N} or raw column values (scaled like the training rows) through the network. */
+	private void inferRow() {
+		final String text = input.getText().trim();
+		final var id = SAMPLE_ID.matcher(text);
+		final float[] scaled;
+		final float[] expected;
+		final String title;
+		if (id.matches()) {
+			final boolean test = id.group(1).equals("test");
+			final var set = test ? testData : data;
+			if (set == null) {
+				throw new IllegalArgumentException("This model has no test rows; use train:N");
+			}
+			final int index;
+			try {
+				index = Integer.parseInt(id.group(2));
+			} catch (NumberFormatException exception) {
+				throw new IllegalArgumentException("Row index too large");
+			}
+			if (index >= set.getInput().length) {
+				throw new IllegalArgumentException(id.group(1) + " rows are numbered 0 to " + (set.getInput().length - 1));
+			}
+			scaled = set.getInput()[index];
+			expected = set.getOutput()[index];
+			title = text;
+		} else {
+			final var pieces = text.split("[,\\s]+");
+			final var names = model.dataset().inputNames();
+			if (text.isEmpty() || pieces.length != names.size()) {
+				throw new IllegalArgumentException("Enter " + names.size() + " values (" + String.join(", ", names)
+						+ ") or train:N / test:N");
+			}
+			final float[] raw = new float[pieces.length];
+			for (int i = 0; i < raw.length; i++) {
+				raw[i] = Float.parseFloat(pieces[i]);
+				if (!Float.isFinite(raw[i])) {
+					throw new IllegalArgumentException("Inputs must be finite");
+				}
+			}
+			scaled = scaling.scaleInput(raw);
+			expected = null;
+			title = "Input";
+		}
+		displayed = network.inspect(scaled);
+		lastUpdate = null;
+		before.setSelected(false);
+		output.setText(title + " [" + rawText(scaling.unscaleInput(scaled)) + "]"
+				+ (expected == null ? "" : " (target " + describeTarget(toList(expected)) + ")") + " -> "
+				+ describeOutput(displayed.output())
+				+ (scaling.scalesInputs() ? "\nThe graph shows the scaled values the network sees." : ""));
+		render();
+	}
+
+	private static List<Float> toList(float[] values) {
+		final var list = new ArrayList<Float>(values.length);
+		for (float value : values) {
+			list.add(value);
+		}
+		return list;
+	}
+
+	private void browseImage() {
+		final var chooser = new FileChooser();
+		chooser.setTitle("Classify an image");
+		chooser.getExtensionFilters().add(new FileChooser.ExtensionFilter("Images", "*.png", "*.jpg", "*.jpeg",
+				"*.gif", "*.bmp"));
+		final var file = chooser.showOpenDialog(stage);
+		if (file != null) {
+			input.setText(file.getAbsolutePath());
+			infer();
+		}
+	}
+
 	private void infer() {
+		if (model.dataset() instanceof HuggingFaceDataset images) {
+			try {
+				inferImage(images);
+			} catch (RuntimeException exception) {
+				showError("Invalid inference input", exception);
+			}
+			return;
+		}
+		if (model.dataset() instanceof HuggingFaceTableDataset) {
+			try {
+				inferRow();
+			} catch (RuntimeException exception) {
+				showError("Invalid inference input", exception);
+			}
+			return;
+		}
 		try {
 			final var pieces = input.getText().trim().split("[,\\s]+");
 			final var values = new float[pieces.length];
@@ -1044,34 +1523,96 @@ public class NetworkVisualizationApplication extends Application {
 		return List.copyOf(values);
 	}
 
+	/** Predictions for the held-out image samples (empty without a test split); same threading rule. */
+	private List<float[]> predictTest() {
+		final var held = testData;
+		if (held == null) {
+			return List.of();
+		}
+		final var values = new ArrayList<float[]>();
+		for (float[] row : held.getInput()) {
+			values.add(network.apply(row).clone());
+		}
+		return List.copyOf(values);
+	}
+
+	private boolean computesSurface() {
+		return model.network().inputs() == 2 && !model.isImageClassification();
+	}
+
 	private OutputSurface.Grid computeGrid() {
-		return model.network().inputs() == 2
+		return computesSurface()
 				? OutputSurface.compute(network, model.dataset().inputBounds(), selectedOutput)
 				: null;
 	}
 
+	private void updateImagePredictions(List<float[]> values) {
+		final var guesses = new ArrayList<int[]>();
+		guesses.add(argmaxes(values));
+		if (testData != null) {
+			guesses.add(lastTestPredictions.size() == testData.getInput().length ? argmaxes(lastTestPredictions)
+					: null);
+		}
+		imageView.update(guesses);
+		final boolean test = testData != null && lastTestPredictions.size() == testData.getInput().length;
+		final var set = test ? testData : data;
+		final var predicted = test ? lastTestPredictions : values;
+		final var samples = test ? testImages : trainImages;
+		final var text = new StringBuilder(String.format(Locale.ROOT, "%-11s %-10s %-12s %-7s %s%n", "Sample",
+				"Label", "Predicted", "Score", "File"));
+		final int rows = Math.min(predicted.size(), set.getInput().length);
+		for (int i = 0; i < Math.min(rows, MAX_RESULT_ROWS); i++) {
+			final int label = ImageClassificationView.argmax(set.getOutput()[i]);
+			final int guess = ImageClassificationView.argmax(predicted.get(i));
+			text.append(String.format(Locale.ROOT, "%-11s %-10s %-12s %-7.3f %s%n", (test ? "test:" : "train:") + i,
+					className(label), className(guess) + (guess == label ? "" : " ✗"), predicted.get(i)[guess],
+					i < samples.size() ? samples.get(i).image().getFileName() : ""));
+		}
+		if (rows > MAX_RESULT_ROWS) {
+			text.append("… ").append(rows - MAX_RESULT_ROWS).append(" more samples (see the gallery)\n");
+		}
+		results.setText(text.toString());
+	}
+
+	private static int[] argmaxes(List<float[]> values) {
+		final int[] result = new int[values.size()];
+		for (int i = 0; i < result.length; i++) {
+			result[i] = ImageClassificationView.argmax(values.get(i));
+		}
+		return result;
+	}
+
 	private void updatePredictions(List<float[]> values, OutputSurface.Grid grid) {
 		lastPredictions = values;
+		if (model.isImageClassification()) {
+			updateImagePredictions(values);
+			return;
+		}
 		final int out = Math.min(selectedOutput, model.dataset().outputSize() - 1);
 		final boolean oneInput = model.network().inputs() == 1;
 		final boolean classification = model.isClassification();
 		final var targetPoints = new ArrayList<XYChart.Data<Number, Number>>();
 		final var predictionPoints = new ArrayList<XYChart.Data<Number, Number>>();
-		final var text = new StringBuilder(String.format(Locale.ROOT, "%-22s %-22s %s%n", "Input", "Target",
-				"Predicted" + (classification ? " (class)" : "")));
-		final int rows = Math.min(values.size(), data.getInput().length);
-		for (int i = 0; i < rows; i++) {
-			final float x = oneInput ? data.getInput()[i][0] : i;
-			targetPoints.add(new XYChart.Data<>(x, data.getOutput()[i][out]));
-			predictionPoints.add(new XYChart.Data<>(x, values.get(i)[out]));
-			if (i < 500) {
-				text.append(String.format(Locale.ROOT, "%-22s %-22s %s%n", compact(data.getInput()[i]),
-						compact(data.getOutput()[i]), compact(values.get(i))
-								+ (classification ? " " + classes(values.get(i)) : "")));
+		final StringBuilder text;
+		if (model.dataset() instanceof HuggingFaceTableDataset table) {
+			text = tableRows(values, table, out, targetPoints, predictionPoints);
+		} else {
+			text = new StringBuilder(String.format(Locale.ROOT, "%-22s %-22s %s%n", "Input", "Target",
+					"Predicted" + (classification ? " (class)" : "")));
+			final int rows = Math.min(values.size(), data.getInput().length);
+			for (int i = 0; i < rows; i++) {
+				final float x = oneInput ? data.getInput()[i][0] : i;
+				targetPoints.add(new XYChart.Data<>(x, data.getOutput()[i][out]));
+				predictionPoints.add(new XYChart.Data<>(x, values.get(i)[out]));
+				if (i < 500) {
+					text.append(String.format(Locale.ROOT, "%-22s %-22s %s%n", compact(data.getInput()[i]),
+							compact(data.getOutput()[i]), compact(values.get(i))
+									+ (classification ? " " + classes(values.get(i)) : "")));
+				}
 			}
-		}
-		if (rows > 500) {
-			text.append("… ").append(rows - 500).append(" more rows\n");
+			if (rows > 500) {
+				text.append("… ").append(rows - 500).append(" more rows\n");
+			}
 		}
 		targets.getData().setAll(targetPoints);
 		predictions.getData().setAll(predictionPoints);
@@ -1090,6 +1631,108 @@ public class NetworkVisualizationApplication extends Application {
 			surface.show(grid, inputs, expected, classification, model.dataset().inputNames(),
 					model.dataset().outputNames().get(out));
 		}
+	}
+
+	/**
+	 * Raw-unit results of a Hugging Face table: metrics, then rows. The chart orders the training rows by
+	 * the selected target so predictions can be compared with a monotone target curve.
+	 */
+	private StringBuilder tableRows(List<float[]> values, HuggingFaceTableDataset table, int out,
+			List<XYChart.Data<Number, Number>> targetPoints, List<XYChart.Data<Number, Number>> predictionPoints) {
+		final int rows = Math.min(values.size(), data.getInput().length);
+		final float[][] rawTargets = new float[rows][];
+		final float[][] rawPredictions = new float[rows][];
+		for (int i = 0; i < rows; i++) {
+			rawTargets[i] = scaling.unscaleOutput(data.getOutput()[i]);
+			rawPredictions[i] = scaling.unscaleOutput(values.get(i));
+		}
+		final Integer[] order = new Integer[rows];
+		for (int i = 0; i < rows; i++) {
+			order[i] = i;
+		}
+		Arrays.sort(order, (a, b) -> Float.compare(rawTargets[a][out], rawTargets[b][out]));
+		final int step = Math.max(1, (rows + MAX_CHART_POINTS - 1) / MAX_CHART_POINTS);
+		for (int k = 0; k < rows; k += step) {
+			targetPoints.add(new XYChart.Data<>(k, rawTargets[order[k]][out]));
+			predictionPoints.add(new XYChart.Data<>(k, rawPredictions[order[k]][out]));
+		}
+		final var text = new StringBuilder("Training rows: ").append(describeMetrics(evaluate(data, values)));
+		if (testData != null && lastTestPredictions.size() == testData.getInput().length) {
+			text.append("  |  test rows: ").append(describeMetrics(evaluate(testData, lastTestPredictions)));
+		}
+		text.append(scaling.isIdentity() ? "\n\n" : "\nValues in raw column units (the network sees them scaled)\n\n");
+		text.append(String.format(Locale.ROOT, "%-10s %-40s %-16s %s%n", "Row", "Inputs", "Target", "Predicted"));
+		final boolean categorical = table.isCategorical();
+		for (int i = 0; i < Math.min(rows, MAX_RESULT_ROWS); i++) {
+			final String target;
+			final String predicted;
+			if (categorical) {
+				final int label = ImageClassificationView.argmax(data.getOutput()[i]);
+				final int guess = ImageClassificationView.argmax(values.get(i));
+				target = className(label);
+				predicted = String.format(Locale.ROOT, "%s (%.3f)%s", className(guess), values.get(i)[guess],
+						guess == label ? "" : " ✗");
+			} else {
+				target = rawText(rawTargets[i]);
+				predicted = rawText(rawPredictions[i]) + (model.isClassification() ? " " + classes(values.get(i)) : "");
+			}
+			text.append(String.format(Locale.ROOT, "%-10s %-40s %-16s %s%n", "train:" + i,
+					rawText(scaling.unscaleInput(data.getInput()[i])), target, predicted));
+		}
+		if (rows > MAX_RESULT_ROWS) {
+			text.append("… ").append(rows - MAX_RESULT_ROWS).append(" more rows (infer train:N or test:N to inspect one)\n");
+		}
+		return text;
+	}
+
+	/**
+	 * Quality of predictions in raw units: {@code accuracy} for classification (strongest output for several
+	 * classes, 0.5 threshold otherwise), {@code mse} and {@code mae} for regression.
+	 */
+	private Map<String, Double> evaluate(TrainingData set, List<float[]> predicted) {
+		final float[][] expected = set.getOutput();
+		final var metrics = new LinkedHashMap<String, Double>();
+		if (expected.length == 0 || predicted.size() != expected.length) {
+			return metrics;
+		}
+		if (multiClass()) {
+			metrics.put("accuracy", classAccuracy(set, predicted));
+		} else if (model.isClassification()) {
+			int correct = 0;
+			int total = 0;
+			for (int i = 0; i < expected.length; i++) {
+				for (int o = 0; o < expected[i].length; o++) {
+					total++;
+					correct += predicted.get(i)[o] >= 0.5f == expected[i][o] >= 0.5f ? 1 : 0;
+				}
+			}
+			metrics.put("accuracy", total == 0 ? 0 : (double) correct / total);
+		} else {
+			double squares = 0;
+			double absolute = 0;
+			int count = 0;
+			for (int i = 0; i < expected.length; i++) {
+				final float[] target = scaling.unscaleOutput(expected[i]);
+				final float[] guess = scaling.unscaleOutput(predicted.get(i));
+				for (int o = 0; o < target.length; o++) {
+					final double error = guess[o] - target[o];
+					squares += error * error;
+					absolute += Math.abs(error);
+					count++;
+				}
+			}
+			metrics.put("mse", squares / count);
+			metrics.put("mae", absolute / count);
+		}
+		return metrics;
+	}
+
+	private static String describeMetrics(Map<String, Double> metrics) {
+		if (metrics.containsKey("accuracy")) {
+			return String.format(Locale.ROOT, "accuracy %.1f%%", 100 * metrics.get("accuracy"));
+		}
+		return metrics.isEmpty() ? "-" : String.format(Locale.ROOT, "MSE %.4g, MAE %.4g", metrics.get("mse"),
+				metrics.get("mae"));
 	}
 
 	private static String compact(float[] values) {

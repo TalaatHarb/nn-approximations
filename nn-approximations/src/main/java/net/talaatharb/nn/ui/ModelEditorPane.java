@@ -2,13 +2,17 @@ package net.talaatharb.nn.ui;
 
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 
+import javafx.concurrent.Task;
 import javafx.geometry.Insets;
 import javafx.geometry.Pos;
 import javafx.scene.control.Button;
+import javafx.scene.control.CheckBox;
 import javafx.scene.control.ComboBox;
 import javafx.scene.control.Label;
 import javafx.scene.control.RadioButton;
@@ -29,12 +33,16 @@ import net.talaatharb.nn.config.ActivationType;
 import net.talaatharb.nn.config.DatasetSpec;
 import net.talaatharb.nn.config.Expression;
 import net.talaatharb.nn.config.FunctionDataset;
+import net.talaatharb.nn.config.HuggingFaceDataset;
+import net.talaatharb.nn.config.HuggingFaceTableDataset;
 import net.talaatharb.nn.config.InitializationSpec;
 import net.talaatharb.nn.config.ModelDefinition;
 import net.talaatharb.nn.config.ModelJson;
 import net.talaatharb.nn.config.NetworkSpec;
 import net.talaatharb.nn.config.TableDataset;
 import net.talaatharb.nn.config.TrainingSpec;
+import net.talaatharb.nn.data.DatasetCache;
+import net.talaatharb.nn.data.HuggingFaceClient;
 
 /**
  * Form + JSON editor for a {@link ModelDefinition}. Input and output layer sizes follow the dataset;
@@ -60,6 +68,10 @@ public class ModelEditorPane extends BorderPane {
 	private final ToggleGroup datasetMode = new ToggleGroup();
 	private final RadioButton functionMode = new RadioButton("Function of inputs (grid)");
 	private final RadioButton tableMode = new RadioButton("Table of samples");
+	private final RadioButton imageMode = new RadioButton("Hugging Face images");
+	private final RadioButton hfTableMode = new RadioButton("Hugging Face table");
+	private final HuggingFaceTableForm hfTable = new HuggingFaceTableForm(this::hfTableChanged);
+	private boolean hfTableHadClasses;
 	private final VBox variables = new VBox(6);
 	private final TextArea expressions = new TextArea();
 	private final TextField tableInputNames = new TextField();
@@ -67,6 +79,23 @@ public class ModelEditorPane extends BorderPane {
 	private final TextArea tableRows = new TextArea();
 	private final VBox functionPane = new VBox(8);
 	private final VBox tablePane = new VBox(8);
+	private final VBox imagePane = new VBox(8);
+	private final TextField hfRepository = new TextField();
+	private final ComboBox<String> hfConfig = editableCombo();
+	private final ComboBox<String> hfSplit = editableCombo();
+	private final ComboBox<String> hfTestSplit = editableCombo();
+	private final TextField hfImageColumn = small("image");
+	private final TextField hfLabelColumn = small("label");
+	private final TextArea hfClasses = new TextArea();
+	private final TextField hfSamples = small("2000");
+	private final TextField hfTestSamples = small("500");
+	private final TextField hfWidth = small("28");
+	private final TextField hfHeight = small("28");
+	private final CheckBox hfGrayscale = new CheckBox("Grayscale");
+	private final Button hfLoadInfo = new Button("Load info");
+	private final Label hfInfo = new Label();
+	private List<HuggingFaceClient.ConfigInfo> hfConfigs = List.of();
+	private boolean syncingTask;
 
 	private final JsonCodeArea json = new JsonCodeArea();
 	private final Label errors = new Label();
@@ -97,10 +126,29 @@ public class ModelEditorPane extends BorderPane {
 			functionPane.setManaged(value == functionMode);
 			tablePane.setVisible(value == tableMode);
 			tablePane.setManaged(value == tableMode);
+			imagePane.setVisible(value == imageMode);
+			imagePane.setManaged(value == imageMode);
+			hfTable.setVisible(value == hfTableMode);
+			hfTable.setManaged(value == hfTableMode);
+			syncTask(value == imageMode, oldValue == imageMode);
+			if (value == hfTableMode) {
+				hfTableChanged();
+			}
 			updateOutputSize();
 		});
+		task.valueProperty().addListener((observable, oldValue, value) -> {
+			if (!syncingTask && value == ModelDefinition.Task.IMAGE_CLASSIFICATION) {
+				datasetMode.selectToggle(imageMode);
+			} else if (!syncingTask && oldValue == ModelDefinition.Task.IMAGE_CLASSIFICATION
+					&& datasetMode.getSelectedToggle() == imageMode) {
+				datasetMode.selectToggle(functionMode);
+			}
+		});
+		hfClasses.textProperty().addListener((observable, oldValue, value) -> updateOutputSize());
 		functionMode.setToggleGroup(datasetMode);
 		tableMode.setToggleGroup(datasetMode);
+		imageMode.setToggleGroup(datasetMode);
+		hfTableMode.setToggleGroup(datasetMode);
 		tableRows.setPrefRowCount(10);
 		tableRows.setStyle("-fx-font-family: monospace;");
 		tableRows.setPromptText("0, 1 -> 1");
@@ -125,6 +173,51 @@ public class ModelEditorPane extends BorderPane {
 		final var field = new TextField(text);
 		field.setPrefColumnCount(6);
 		return field;
+	}
+
+	private static ComboBox<String> editableCombo() {
+		final var combo = new ComboBox<String>();
+		combo.setEditable(true);
+		combo.setPrefWidth(150);
+		return combo;
+	}
+
+	HuggingFaceTableForm tableForm() {
+		return hfTable;
+	}
+
+	/** A categorical target means classification; a numeric one defaults to regression (0/1 targets may classify). */
+	private void hfTableChanged() {
+		if (datasetMode.getSelectedToggle() != hfTableMode) {
+			return;
+		}
+		final boolean hasClasses = !hfTable.classNames().isEmpty();
+		syncingTask = true;
+		try {
+			if (hasClasses) {
+				task.setValue(ModelDefinition.Task.CLASSIFICATION);
+			} else if (hfTableHadClasses || task.getValue() != ModelDefinition.Task.CLASSIFICATION) {
+				task.setValue(ModelDefinition.Task.REGRESSION);
+			}
+		} finally {
+			syncingTask = false;
+		}
+		hfTableHadClasses = hasClasses;
+		updateOutputSize();
+	}
+
+	/** Keeps the task and the dataset kind consistent: image datasets go with image classification only. */
+	private void syncTask(boolean images, boolean wasImages) {
+		syncingTask = true;
+		try {
+			if (images) {
+				task.setValue(ModelDefinition.Task.IMAGE_CLASSIFICATION);
+			} else if (wasImages && task.getValue() == ModelDefinition.Task.IMAGE_CLASSIFICATION) {
+				task.setValue(ModelDefinition.Task.REGRESSION);
+			}
+		} finally {
+			syncingTask = false;
+		}
 	}
 
 	private static ScrollPane scroll(VBox content) {
@@ -185,7 +278,147 @@ public class ModelEditorPane extends BorderPane {
 		tablePane.getChildren().setAll(names,
 				new Label("Rows: inputs -> outputs, comma or space separated, one sample per line"), tableRows);
 		VBox.setVgrow(tableRows, Priority.ALWAYS);
-		return new VBox(8, new HBox(16, functionMode, tableMode), outputSize(), functionPane, tablePane);
+		return new VBox(8, new HBox(16, functionMode, tableMode, imageMode, hfTableMode), outputSize(), functionPane,
+				tablePane, imageForm(), hfTable);
+	}
+
+	private VBox imageForm() {
+		hfRepository.setPromptText("owner/name, e.g. ylecun/mnist");
+		hfClasses.setPrefRowCount(2);
+		hfClasses.setWrapText(true);
+		hfClasses.setPromptText("Class names in label order, comma separated (Load info fills them in)");
+		hfTestSplit.setPromptText("none");
+		hfInfo.setWrapText(true);
+		hfInfo.setStyle("-fx-text-fill: #555;");
+		hfLoadInfo.setOnAction(event -> loadHuggingFaceInfo());
+		hfConfig.valueProperty().addListener((observable, oldValue, value) -> showConfig(value));
+		final var source = new GridPane();
+		source.setHgap(8);
+		source.setVgap(6);
+		source.addRow(0, new Label("Repository"), new HBox(8, hfRepository, hfLoadInfo));
+		HBox.setHgrow(hfRepository, Priority.ALWAYS);
+		source.addRow(1, new Label("Config"), hfConfig);
+		source.addRow(2, new Label("Training split"),
+				new HBox(8, hfSplit, new Label("samples"), hfSamples));
+		source.addRow(3, new Label("Test split"),
+				new HBox(8, hfTestSplit, new Label("samples"), hfTestSamples));
+		source.addRow(4, new Label("Columns"),
+				new HBox(8, new Label("image"), hfImageColumn, new Label("label"), hfLabelColumn));
+		source.addRow(5, new Label("Resize to"),
+				new HBox(8, hfWidth, new Label("x"), hfHeight, hfGrayscale));
+		source.addRow(6, new Label("Classes"), hfClasses);
+		GridPane.setHgrow(hfClasses, Priority.ALWAYS);
+		for (var node : source.getChildren()) {
+			if (node instanceof HBox box) {
+				box.setAlignment(Pos.CENTER_LEFT);
+			}
+		}
+		final var help = new Label("Images are downloaded from the Hugging Face Parquet export into "
+				+ DatasetCache.defaultDirectory() + " the first time the model is opened (set HF_TOKEN for gated"
+				+ " datasets). Each pixel is one input scaled to 0..1 and each class is one output neuron, so keep"
+				+ " images small (at most " + HuggingFaceDataset.MAX_IMAGE_SIDE + " px a side).");
+		help.setWrapText(true);
+		help.setStyle("-fx-text-fill: #555;");
+		imagePane.getChildren().setAll(source, hfInfo, help);
+		return imagePane;
+	}
+
+	private void loadHuggingFaceInfo() {
+		final String repository = hfRepository.getText().trim();
+		if (!HuggingFaceClient.REPOSITORY.matcher(repository).matches()) {
+			hfInfo.setText("Enter a repository such as ylecun/mnist first.");
+			return;
+		}
+		hfLoadInfo.setDisable(true);
+		hfInfo.setText("Asking Hugging Face about " + repository + "…");
+		final var client = HuggingFaceClient.fromEnvironment();
+		final var info = new Task<List<HuggingFaceClient.ConfigInfo>>() {
+			@Override
+			protected List<HuggingFaceClient.ConfigInfo> call() throws Exception {
+				return client.info(repository);
+			}
+		};
+		info.setOnSucceeded(event -> {
+			hfLoadInfo.setDisable(false);
+			hfConfigs = info.getValue();
+			final String previous = hfConfig.getValue();
+			hfConfig.getItems().setAll(hfConfigs.stream().map(HuggingFaceClient.ConfigInfo::config).toList());
+			final String chosen = hfConfig.getItems().contains(previous) ? previous
+					: hfConfig.getItems().isEmpty() ? "default" : hfConfig.getItems().get(0);
+			hfConfig.setValue(null);
+			hfConfig.setValue(chosen);
+			fillFromInfo(chosen, client, repository);
+		});
+		info.setOnFailed(event -> {
+			hfLoadInfo.setDisable(false);
+			hfInfo.setText("Could not load dataset info: " + info.getException().getMessage());
+		});
+		Thread.ofVirtual().start(info);
+	}
+
+	private Optional<HuggingFaceClient.ConfigInfo> configInfo(String config) {
+		return hfConfigs.stream().filter(info -> info.config().equals(config)).findFirst();
+	}
+
+	/** Lists the splits of a config the user picked after Load info. */
+	private void showConfig(String config) {
+		configInfo(config).ifPresent(info -> {
+			final String split = hfSplit.getValue();
+			final String test = hfTestSplit.getValue();
+			hfSplit.getItems().setAll(info.splits().keySet());
+			hfTestSplit.getItems().setAll(info.splits().keySet());
+			hfSplit.setValue(split);
+			hfTestSplit.setValue(test);
+		});
+	}
+
+	/** Fills columns, classes, splits and image size from the reported features of one config. */
+	private void fillFromInfo(String config, HuggingFaceClient client, String repository) {
+		final var found = configInfo(config);
+		if (found.isEmpty()) {
+			hfInfo.setText("No configs reported for " + repository + ".");
+			return;
+		}
+		final var info = found.get();
+		final var problems = new ArrayList<String>();
+		info.firstImage().ifPresentOrElse(feature -> hfImageColumn.setText(feature.name()),
+				() -> problems.add("no image column"));
+		info.firstClassLabel().ifPresentOrElse(feature -> {
+			hfLabelColumn.setText(feature.name());
+			hfClasses.setText(String.join(", ", feature.classNames()));
+		}, () -> problems.add("no class-label column (enter the label column and class names yourself)"));
+		final var splits = info.splits().keySet();
+		final String train = splits.contains("train") ? "train" : splits.stream().findFirst().orElse("train");
+		hfSplit.setValue(train);
+		final String test = splits.contains("test") ? "test"
+				: splits.contains("validation") ? "validation" : null;
+		hfTestSplit.setValue(test);
+		final var sizes = new StringBuilder();
+		info.splits().forEach((split, count) -> sizes.append(sizes.isEmpty() ? "" : ", ").append(split)
+				.append(count >= 0 ? " " + count : ""));
+		hfInfo.setText(info.config() + ": " + sizes + (problems.isEmpty() ? "" : " — " + String.join("; ", problems))
+				+ ". Checking the image size…");
+		final String column = hfImageColumn.getText().trim();
+		final var size = new Task<Optional<int[]>>() {
+			@Override
+			protected Optional<int[]> call() throws Exception {
+				return client.firstImageSize(repository, info.config(), train, column);
+			}
+		};
+		final String summary = info.config() + ": " + sizes
+				+ (problems.isEmpty() ? "" : " — " + String.join("; ", problems));
+		size.setOnSucceeded(event -> size.getValue().ifPresentOrElse(dimensions -> {
+			final int width = Math.min(dimensions[0], HuggingFaceDataset.MAX_IMAGE_SIDE);
+			final int height = Math.min(dimensions[1], HuggingFaceDataset.MAX_IMAGE_SIDE);
+			hfWidth.setText(Integer.toString(width));
+			hfHeight.setText(Integer.toString(height));
+			hfInfo.setText(summary + ". Images are " + dimensions[0] + "x" + dimensions[1]
+					+ (width != dimensions[0] || height != dimensions[1] ? " (resized to " + width + "x" + height + ")"
+							: "")
+					+ ".");
+		}, () -> hfInfo.setText(summary + ".")));
+		size.setOnFailed(event -> hfInfo.setText(summary + "."));
+		Thread.ofVirtual().start(size);
 	}
 
 	private Label outputSize() {
@@ -258,9 +491,44 @@ public class ModelEditorPane extends BorderPane {
 			datasetMode.selectToggle(tableMode);
 			fillTable(table);
 			addVariable(new FunctionDataset.Variable("x", -1, 1, 21));
+		} else if (model.dataset() instanceof HuggingFaceTableDataset table) {
+			datasetMode.selectToggle(hfTableMode);
+			hfTable.load(table);
+			task.setValue(model.task());
+			addVariable(new FunctionDataset.Variable("x", -1, 1, 21));
+			tableInputNames.clear();
+			tableOutputNames.clear();
+			tableRows.clear();
+		} else if (model.dataset() instanceof HuggingFaceDataset images) {
+			datasetMode.selectToggle(imageMode);
+			fillImages(images);
+			addVariable(new FunctionDataset.Variable("x", -1, 1, 21));
+			tableInputNames.clear();
+			tableOutputNames.clear();
+			tableRows.clear();
 		}
 		errors.setText("");
 		updateOutputSize();
+	}
+
+	private void fillImages(HuggingFaceDataset images) {
+		hfConfigs = List.of();
+		hfRepository.setText(images.repository());
+		hfConfig.getItems().setAll(images.config());
+		hfConfig.setValue(images.config());
+		hfSplit.getItems().clear();
+		hfTestSplit.getItems().clear();
+		hfSplit.setValue(images.split());
+		hfTestSplit.setValue(images.testSplit());
+		hfImageColumn.setText(images.imageColumn());
+		hfLabelColumn.setText(images.labelColumn());
+		hfClasses.setText(String.join(", ", images.classes()));
+		hfSamples.setText(Integer.toString(images.samples()));
+		hfTestSamples.setText(Integer.toString(images.testSamples()));
+		hfWidth.setText(Integer.toString(images.image().width()));
+		hfHeight.setText(Integer.toString(images.image().height()));
+		hfGrayscale.setSelected(images.image().grayscale());
+		hfInfo.setText("");
 	}
 
 	private static DatasetSpec toTable(FunctionDataset function) {
@@ -370,6 +638,10 @@ public class ModelEditorPane extends BorderPane {
 		if (datasetMode.getSelectedToggle() == tableMode) {
 			final var first = tableRows.getText().lines().filter(line -> line.contains("->")).findFirst();
 			count = first.map(line -> numbers(line.substring(line.indexOf("->") + 2)).length).orElse(0);
+		} else if (datasetMode.getSelectedToggle() == imageMode) {
+			count = classNames().size();
+		} else if (datasetMode.getSelectedToggle() == hfTableMode) {
+			count = hfTable.outputCount();
 		} else {
 			count = (int) expressions.getText().lines().filter(line -> !line.isBlank()).count();
 		}
@@ -388,8 +660,10 @@ public class ModelEditorPane extends BorderPane {
 	 */
 	public ModelDefinition build() {
 		final var problems = new ArrayList<String>();
-		final DatasetSpec dataset = datasetMode.getSelectedToggle() == tableMode ? buildTable(problems)
-				: buildFunction(problems);
+		final var mode = datasetMode.getSelectedToggle();
+		final DatasetSpec dataset = mode == tableMode ? buildTable(problems)
+				: mode == imageMode ? buildImages(problems)
+						: mode == hfTableMode ? hfTable.build(problems) : buildFunction(problems);
 		final var layers = new ArrayList<NetworkSpec.LayerSpec>();
 		for (var node : hiddenLayers.getChildren()) {
 			final var row = (LayerRow) node.getUserData();
@@ -438,6 +712,32 @@ public class ModelEditorPane extends BorderPane {
 			return null;
 		}
 		return new FunctionDataset(list, outputs);
+	}
+
+	private List<String> classNames() {
+		return Arrays.stream(hfClasses.getText().split("[,\\n]")).map(String::trim).filter(name -> !name.isEmpty())
+				.toList();
+	}
+
+	private static String comboText(ComboBox<String> combo) {
+		final String typed = combo.getEditor().getText();
+		final String text = typed == null || typed.isBlank() ? combo.getValue() : typed;
+		return text == null ? "" : text.trim();
+	}
+
+	private DatasetSpec buildImages(List<String> problems) {
+		final String repository = hfRepository.getText().trim();
+		if (repository.isEmpty()) {
+			problems.add("Enter a Hugging Face repository such as ylecun/mnist");
+			return null;
+		}
+		final String testSplit = comboText(hfTestSplit);
+		return new HuggingFaceDataset(repository, comboText(hfConfig), comboText(hfSplit),
+				hfImageColumn.getText().trim(), hfLabelColumn.getText().trim(), classNames(),
+				parseInt(hfSamples, "training samples", problems), testSplit.isEmpty() ? null : testSplit,
+				testSplit.isEmpty() ? 0 : parseInt(hfTestSamples, "test samples", problems),
+				new HuggingFaceDataset.ImageSpec(parseInt(hfWidth, "image width", problems),
+						parseInt(hfHeight, "image height", problems), hfGrayscale.isSelected()));
 	}
 
 	private DatasetSpec buildTable(List<String> problems) {

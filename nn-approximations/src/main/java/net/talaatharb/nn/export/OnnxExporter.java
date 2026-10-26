@@ -3,12 +3,16 @@ package net.talaatharb.nn.export;
 import java.io.IOException;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
 import net.talaatharb.nn.config.ActivationSpec;
 import net.talaatharb.nn.config.ActivationType;
+import net.talaatharb.nn.config.DataScaling;
+import net.talaatharb.nn.config.DatasetSpec;
+import net.talaatharb.nn.config.HuggingFaceTableDataset;
 import net.talaatharb.nn.config.ModelDefinition;
 import net.talaatharb.nn.config.ModelJson;
 
@@ -35,20 +39,46 @@ public final class OnnxExporter {
 	}
 
 	public static void write(ModelDefinition model, float[][][] weights, Path path) throws IOException {
-		ExportFiles.writeAtomically(path, toBytes(model, weights));
+		write(model, weights, model.dataset().scaling(), path);
 	}
 
+	public static void write(ModelDefinition model, float[][][] weights, DataScaling scaling, Path path)
+			throws IOException {
+		ExportFiles.writeAtomically(path, toBytes(model, weights, scaling));
+	}
+
+	/** Uses the dataset's {@link DatasetSpec#scaling() scaling}, so consumers pass raw column values. */
 	public static byte[] toBytes(ModelDefinition model, float[][][] weights) {
+		return toBytes(model, weights, model.dataset().scaling());
+	}
+
+	/**
+	 * A non-identity scaling becomes {@code Sub}/{@code Div} nodes before the first layer and {@code Mul}/{@code Add}
+	 * after the last one, so the graph takes raw column values and returns predictions in target units.
+	 */
+	public static byte[] toBytes(ModelDefinition model, float[][][] weights, DataScaling scaling) {
 		ExportFiles.requireCompatible(model, weights);
+		ExportFiles.requireCompatible(model, scaling);
 		final var nodes = new ArrayList<byte[]>();
 		final var initializers = new ArrayList<byte[]>();
 		final var layers = model.network().layers();
 		String previous = INPUT;
+		if (scaling.scalesInputs()) {
+			final long[] dims = { scaling.inputOffset().length };
+			initializers.add(tensor("input_offset", dims, scaling.inputOffset()));
+			initializers.add(tensor("input_scale", dims, scaling.inputScale()));
+			nodes.add(node("input_center", "Sub", List.of(INPUT, "input_offset"), "input_centered", w -> {
+			}));
+			nodes.add(node("input_normalize", "Div", List.of("input_centered", "input_scale"), "input_scaled", w -> {
+			}));
+			previous = "input_scaled";
+		}
+		final boolean unscale = scaling.scalesOutputs();
 		for (int l = 0; l < layers.size(); l++) {
 			final boolean last = l == layers.size() - 1;
 			final var activation = layers.get(l).activation();
 			final boolean linear = activation.resolve() == ActivationType.LINEAR;
-			final String a = last ? OUTPUT : "layer" + l + "_a";
+			final String a = last ? (unscale ? "network_output" : OUTPUT) : "layer" + l + "_a";
 			final String z = linear ? a : "layer" + l + "_z";
 			final float[][] layer = weights[l];
 			final int neurons = layer.length;
@@ -68,6 +98,15 @@ public final class OnnxExporter {
 			}
 			previous = a;
 		}
+		if (unscale) {
+			final long[] dims = { scaling.outputOffset().length };
+			initializers.add(tensor("output_scale", dims, scaling.outputScale()));
+			initializers.add(tensor("output_offset", dims, scaling.outputOffset()));
+			nodes.add(node("output_rescale", "Mul", List.of(previous, "output_scale"), "output_rescaled", w -> {
+			}));
+			nodes.add(node("output_shift", "Add", List.of("output_rescaled", "output_offset"), OUTPUT, w -> {
+			}));
+		}
 
 		final var definition = model.withWeights(null);
 		final var metadata = new LinkedHashMap<String, String>();
@@ -75,6 +114,23 @@ public final class OnnxExporter {
 		metadata.put("nn.task", model.task().name().toLowerCase(java.util.Locale.ROOT));
 		metadata.put("nn.input_names", String.join(",", model.dataset().inputNames()));
 		metadata.put("nn.output_names", String.join(",", model.dataset().outputNames()));
+		if (model.dataset() instanceof net.talaatharb.nn.config.HuggingFaceDataset images) {
+			final var image = images.image();
+			metadata.put("nn.input_image", image.width() + "x" + image.height() + " "
+					+ (image.grayscale() ? "grayscale" : "RGB interleaved per pixel")
+					+ ", row-major, pixel values scaled to 0..1");
+			metadata.put("nn.dataset", images.repository() + " " + images.config() + "/" + images.split());
+		}
+		if (model.dataset() instanceof HuggingFaceTableDataset table) {
+			metadata.put("nn.dataset", table.repository() + " " + table.config() + "/" + table.split() + " -> "
+					+ table.targetColumn());
+		}
+		if (!scaling.isIdentity()) {
+			metadata.put("nn.input_scaling", "raw inputs; the graph computes (input - offset) / scale with offset="
+					+ Arrays.toString(scaling.inputOffset()) + " scale=" + Arrays.toString(scaling.inputScale()));
+			metadata.put("nn.output_scaling", "outputs in target units: network * scale + offset with scale="
+					+ Arrays.toString(scaling.outputScale()) + " offset=" + Arrays.toString(scaling.outputOffset()));
+		}
 		metadata.put("nn.model_json", ModelJson.write(definition));
 		final var graph = new ProtoWriter();
 		nodes.forEach(node -> graph.bytes(1, node));

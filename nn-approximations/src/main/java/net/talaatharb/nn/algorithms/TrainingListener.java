@@ -11,6 +11,14 @@ public interface TrainingListener {
 	default void beforeUpdate(int epoch, long step, int sampleIndex) {
 	}
 
+	/**
+	 * Whether update {@code step} should be observed: snapshots are captured before/after it and
+	 * {@link #onUpdate} is called. Snapshots of large networks are costly, so a UI can sample.
+	 */
+	default boolean observeUpdate(long step) {
+		return true;
+	}
+
 	default void onUpdate(TrainingUpdate update) {
 	}
 

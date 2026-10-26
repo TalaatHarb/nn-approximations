@@ -64,7 +64,8 @@ public class StochasticGradientDescent implements TrainingAlgorithm {
 				checkCancellation(cancelled);
 				final var prediction = network.apply(inputs[index]);
 				final float lossBefore = finiteLoss(lossFunction.errorMetric(outputs[index], prediction));
-				final var before = listener == TrainingListener.NONE ? null : network.inspect(inputs[index]);
+				final boolean observe = listener != TrainingListener.NONE && listener.observeUpdate(step + 1);
+				final var before = observe ? network.inspect(inputs[index]) : null;
 				float[] gradient = lossFunction.numericalDervative(outputs[index], prediction);
 				for (int l = network.getDepth() - 1; l >= 0; l--) {
 					final var layer = network.getLayers()[l];
@@ -91,7 +92,7 @@ public class StochasticGradientDescent implements TrainingAlgorithm {
 					gradient = propagated;
 				}
 				step++;
-				if (listener != TrainingListener.NONE) {
+				if (observe) {
 					final var after = network.inspect(inputs[index]);
 					final float lossAfter = finiteLoss(lossFunction.errorMetric(outputs[index],
 							network.getLayers()[network.getDepth() - 1].getLastOutput()));

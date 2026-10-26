@@ -12,6 +12,8 @@ public record NetworkSpec(int inputs, List<LayerSpec> layers) {
 
 	public static final int MAX_NEURONS_PER_LAYER = 512;
 	public static final int MAX_LAYERS = 32;
+	/** Every weight becomes a drawable connection in each snapshot, so very large networks are refused. */
+	public static final int MAX_PARAMETERS = 250_000;
 
 	public record LayerSpec(int neurons, ActivationSpec activation) {
 	}
@@ -82,5 +84,20 @@ public record NetworkSpec(int inputs, List<LayerSpec> layers) {
 				layer.activation().validate(where, errors);
 			}
 		}
+		if (layers.stream().allMatch(java.util.Objects::nonNull) && weightCount() > MAX_PARAMETERS) {
+			errors.add(String.format(java.util.Locale.ROOT,
+					"network has %,d weights; at most %,d can be visualized (use fewer neurons or smaller images)",
+					weightCount(), MAX_PARAMETERS));
+		}
+	}
+
+	private long weightCount() {
+		long count = 0;
+		long previous = inputs;
+		for (var layer : layers) {
+			count += layer.neurons() * (previous + 1);
+			previous = layer.neurons();
+		}
+		return count;
 	}
 }

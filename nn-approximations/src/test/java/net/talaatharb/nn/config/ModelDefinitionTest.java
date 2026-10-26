@@ -20,6 +20,10 @@ import net.talaatharb.nn.structures.FeedForwardNN;
 class ModelDefinitionTest {
 
 	static final List<String> BUILT_INS = ExampleCatalog.BUILT_IN_IDS;
+	/** Built-ins whose data is generated offline; Hugging Face datasets are downloaded and tested separately. */
+	static final List<String> OFFLINE_BUILT_INS = BUILT_INS.stream()
+			.filter(id -> !(ExampleCatalog.builtIn(id).dataset() instanceof HuggingFaceDataset
+					|| ExampleCatalog.builtIn(id).dataset() instanceof HuggingFaceTableDataset)).toList();
 
 	@ParameterizedTest
 	@FieldSource("BUILT_INS")
@@ -28,11 +32,16 @@ class ModelDefinitionTest {
 		final var copy = ModelJson.read(ModelJson.write(model));
 		assertEquals(ModelJson.write(model), ModelJson.write(copy));
 		assertEquals(List.of(), copy.validate());
-		assertArrayEquals(model.dataset().toTrainingData().getOutput(), copy.dataset().toTrainingData().getOutput());
+		if (OFFLINE_BUILT_INS.contains(id)) {
+			assertArrayEquals(model.dataset().toTrainingData().getOutput(),
+					copy.dataset().toTrainingData().getOutput());
+		} else {
+			assertEquals(model.dataset(), copy.dataset());
+		}
 	}
 
 	@ParameterizedTest
-	@FieldSource("BUILT_INS")
+	@FieldSource("OFFLINE_BUILT_INS")
 	void everyBuiltInLearnsItsFunction(String id) {
 		final var model = ExampleCatalog.builtIn(id);
 		final var network = model.createNetwork(0);
@@ -143,6 +152,13 @@ class ModelDefinitionTest {
 			assertTrue(errors.contains(expected), "missing '" + expected + "' in:\n" + errors);
 		}
 		assertThrows(ModelDefinition.InvalidModelException.class, () -> ModelJson.read(json).requireValid());
+	}
+
+	@Test
+	void oversizedNetworksAreRejected() throws Exception {
+		final String json = ModelJson.write(ExampleCatalog.builtIn("mnist")).replace("\"neurons\" : 32",
+				"\"neurons\" : 400");
+		assertTrue(ModelJson.read(json).validate().toString().contains("at most 250,000 can be visualized"));
 	}
 
 	@Test

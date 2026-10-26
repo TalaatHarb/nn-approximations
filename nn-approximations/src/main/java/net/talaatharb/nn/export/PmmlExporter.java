@@ -14,6 +14,8 @@ import javax.xml.stream.XMLStreamWriter;
 
 import net.talaatharb.nn.config.ActivationSpec;
 import net.talaatharb.nn.config.ActivationType;
+import net.talaatharb.nn.config.DataScaling;
+import net.talaatharb.nn.config.DatasetSpec;
 import net.talaatharb.nn.config.ModelDefinition;
 
 /**
@@ -47,11 +49,26 @@ public final class PmmlExporter {
 	}
 
 	public static void write(ModelDefinition model, float[][][] weights, Path path) throws IOException {
-		ExportFiles.writeAtomically(path, toXml(model, weights).getBytes(StandardCharsets.UTF_8));
+		write(model, weights, model.dataset().scaling(), path);
 	}
 
+	public static void write(ModelDefinition model, float[][][] weights, DataScaling scaling, Path path)
+			throws IOException {
+		ExportFiles.writeAtomically(path, toXml(model, weights, scaling).getBytes(StandardCharsets.UTF_8));
+	}
+
+	/** Uses the dataset's {@link DatasetSpec#scaling() scaling}, so consumers pass raw column values. */
 	public static String toXml(ModelDefinition model, float[][][] weights) {
+		return toXml(model, weights, model.dataset().scaling());
+	}
+
+	/**
+	 * Inputs and outputs whose scaling is not the identity get a {@code NormContinuous} transformation: PMML
+	 * consumers feed raw values and receive predictions in target units.
+	 */
+	public static String toXml(ModelDefinition model, float[][][] weights, DataScaling scaling) {
 		ExportFiles.requireCompatible(model, weights);
+		ExportFiles.requireCompatible(model, scaling);
 		unsupportedReason(model).ifPresent(reason -> {
 			throw new IllegalArgumentException(reason);
 		});
@@ -104,7 +121,7 @@ public final class PmmlExporter {
 			for (int i = 0; i < inputs.size(); i++) {
 				xml.writeStartElement("NeuralInput");
 				xml.writeAttribute("id", "0," + i);
-				fieldRef(xml, inputs.get(i));
+				field(xml, inputs.get(i), scaling.inputOffset()[i], scaling.inputScale()[i]);
 				xml.writeEndElement();
 			}
 			xml.writeEndElement();
@@ -137,7 +154,7 @@ public final class PmmlExporter {
 			for (int o = 0; o < outputs.size(); o++) {
 				xml.writeStartElement("NeuralOutput");
 				xml.writeAttribute("outputNeuron", layers.size() + "," + o);
-				fieldRef(xml, outputs.get(o));
+				field(xml, outputs.get(o), scaling.outputOffset()[o], scaling.outputScale()[o]);
 				xml.writeEndElement();
 			}
 			xml.writeEndElement();
@@ -167,12 +184,26 @@ public final class PmmlExporter {
 		};
 	}
 
-	private static void fieldRef(XMLStreamWriter xml, String field) throws XMLStreamException {
+	/** The field as is, or normalized as (value - offset) / scale through two LinearNorm points. */
+	private static void field(XMLStreamWriter xml, String field, float offset, float scale)
+			throws XMLStreamException {
 		xml.writeStartElement("DerivedField");
 		xml.writeAttribute("optype", "continuous");
 		xml.writeAttribute("dataType", "double");
-		xml.writeEmptyElement("FieldRef");
-		xml.writeAttribute("field", field);
+		if (offset == 0 && scale == 1) {
+			xml.writeEmptyElement("FieldRef");
+			xml.writeAttribute("field", field);
+		} else {
+			xml.writeStartElement("NormContinuous");
+			xml.writeAttribute("field", field);
+			xml.writeEmptyElement("LinearNorm");
+			xml.writeAttribute("orig", number(offset));
+			xml.writeAttribute("norm", "0");
+			xml.writeEmptyElement("LinearNorm");
+			xml.writeAttribute("orig", Double.toString((double) offset + scale));
+			xml.writeAttribute("norm", "1");
+			xml.writeEndElement();
+		}
 		xml.writeEndElement();
 	}
 
