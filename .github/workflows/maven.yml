@@ -44,4 +44,6 @@ jobs:
           path: |
             nn-approximations/target/surefire-reports/
             nn-approximations/target/site/jacoco/
+            nn-approximations/hs_err_pid*.log
+            nn-approximations/replay_pid*.log
           if-no-files-found: warn
