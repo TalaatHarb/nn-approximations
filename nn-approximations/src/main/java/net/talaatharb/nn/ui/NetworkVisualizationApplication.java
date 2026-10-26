@@ -95,6 +95,7 @@ public class NetworkVisualizationApplication extends Application {
 	private final Button delete = new Button("Delete");
 	private final Button importModel = new Button("Import");
 	private final MenuButton export = new MenuButton("Export");
+	private final Button viewJson = new Button("View JSON");
 	private final Label summary = new Label();
 
 	private final TextField rate = new TextField();
@@ -261,7 +262,8 @@ public class NetworkVisualizationApplication extends Application {
 		lastRun.setVisible(false);
 		lastRun.setOnAction(event -> getHostServices().showDocument(lastRunUrl));
 		showTrackingTarget();
-		lockedWhileTraining.addAll(List.of(models, newModel, edit, duplicate, delete, importModel, export, rate, epochs,
+		lockedWhileTraining.addAll(List.of(models, newModel, edit, duplicate, delete, importModel, export, viewJson,
+				rate, epochs,
 				threshold, train, scheme, initMin, initMax, seed, randomize, reset, storeWeights, clearWeights, input,
 				infer, outputSelector, trackRuns, trackingSettings));
 	}
@@ -280,7 +282,8 @@ public class NetworkVisualizationApplication extends Application {
 			delayMillis = value.intValue();
 			speedLabel.setText(delayMillis + " ms/update");
 		});
-		final var modelRow = row(new Label("Model"), models, newModel, edit, duplicate, delete, importModel, export);
+		final var modelRow = row(new Label("Model"), models, newModel, edit, duplicate, delete, importModel, export,
+				viewJson);
 		final var trainingRow = row(new Label("Rate"), rate, new Label("Max epochs"), epochs, new Label("Target MSE"),
 				threshold, new Separator(javafx.geometry.Orientation.VERTICAL), train, pause, step, stop, speed,
 				speedLabel);
@@ -391,6 +394,7 @@ public class NetworkVisualizationApplication extends Application {
 			}
 		});
 		newModel.setOnAction(event -> editModel(null, template(), "New model"));
+		viewJson.setOnAction(event -> new JsonViewer(stage, model, network.copyWeights()).show());
 		edit.setOnAction(event -> editModel(models.getValue(), model, "Edit " + model.name()));
 		duplicate.setOnAction(event -> editModel(null, model.withName(model.name() + " copy"), "Duplicate model"));
 		delete.setOnAction(event -> deleteModel());
@@ -861,7 +865,7 @@ public class NetworkVisualizationApplication extends Application {
 		final String runName = model.name() + " " + java.time.LocalDateTime.now()
 				.format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"));
 		trackingStatus.setText("Logging run \"" + runName + "\" to " + tracking.trackingUri());
-		return MlflowRunLogger.start(new MlflowClient(tracking.uri()),
+		return MlflowRunLogger.start(MlflowClient.connect(tracking),
 				new MlflowRunLogger.RunRequest(tracking.experimentName(), runName, params, tags),
 				problem -> Platform.runLater(() -> trackingStatus.setText(problem)));
 	}

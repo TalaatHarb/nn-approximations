@@ -68,7 +68,7 @@ public class ModelEditorPane extends BorderPane {
 	private final VBox functionPane = new VBox(8);
 	private final VBox tablePane = new VBox(8);
 
-	private final TextArea json = new TextArea();
+	private final JsonCodeArea json = new JsonCodeArea();
 	private final Label errors = new Label();
 	private final TabPane tabs = new TabPane();
 
@@ -104,7 +104,6 @@ public class ModelEditorPane extends BorderPane {
 		tableRows.setPrefRowCount(10);
 		tableRows.setStyle("-fx-font-family: monospace;");
 		tableRows.setPromptText("0, 1 -> 1");
-		json.setStyle("-fx-font-family: monospace;");
 		errors.setStyle("-fx-text-fill: #b71c1c;");
 		errors.setWrapText(true);
 
@@ -212,15 +211,15 @@ public class ModelEditorPane extends BorderPane {
 				errors.setText(exception.getMessage());
 			}
 		});
-		final var box = new VBox(8, new HBox(8, refresh, apply), json);
-		VBox.setVgrow(json, Priority.ALWAYS);
+		final var box = new VBox(8, new HBox(8, refresh, apply), json.pane());
+		VBox.setVgrow(json.pane(), Priority.ALWAYS);
 		box.setPadding(new Insets(10));
 		return box;
 	}
 
 	private void refreshJson() {
 		try {
-			json.setText(ModelJson.write(build()));
+			json.setJson(ModelJson.write(build()));
 			errors.setText("");
 		} catch (IllegalArgumentException exception) {
 			errors.setText(exception.getMessage());

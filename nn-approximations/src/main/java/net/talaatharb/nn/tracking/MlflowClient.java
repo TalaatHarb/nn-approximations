@@ -60,9 +60,24 @@ public class MlflowClient {
 	private final HttpClient http;
 	private final String authorization;
 
+	/** Authenticates with the {@code MLFLOW_TRACKING_*} environment variables, if set. */
 	public MlflowClient(URI base) {
-		this(base, HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(10))
-				.followRedirects(HttpClient.Redirect.NORMAL).build(), authorizationFromEnvironment());
+		this(base, defaultHttpClient(), authorizationFromEnvironment());
+	}
+
+	/** Uses the settings' username and password, falling back to the environment variables. */
+	public static MlflowClient connect(MlflowSettings settings) {
+		return new MlflowClient(settings.uri(), defaultHttpClient(), authorization(settings));
+	}
+
+	static String authorization(MlflowSettings settings) {
+		return settings.hasCredentials() ? basic(settings.username(), settings.password())
+				: authorizationFromEnvironment();
+	}
+
+	private static HttpClient defaultHttpClient() {
+		return HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(10))
+				.followRedirects(HttpClient.Redirect.NORMAL).build();
 	}
 
 	MlflowClient(URI base, HttpClient http, String authorization) {
@@ -80,6 +95,11 @@ public class MlflowClient {
 	public String version() throws IOException {
 		final var response = send(request("/version").GET().build());
 		return response.body().trim();
+	}
+
+	/** Lists one experiment: fails when the credentials are missing or rejected. */
+	public void checkAccess() throws IOException {
+		getJson("/api/2.0/mlflow/experiments/search?max_results=1");
 	}
 
 	/** Id of the named experiment, creating it when missing. */
@@ -213,6 +233,12 @@ public class MlflowClient {
 			if (message != null && message.length() > 300) {
 				message = message.substring(0, 300) + "...";
 			}
+			if (response.statusCode() == 401) {
+				message = (authorization == null ? "the server requires a username and password"
+						: "the username or password was rejected") + " (" + message.strip() + ")";
+			} else if (response.statusCode() == 403) {
+				message = "the user is not allowed to do this (" + message.strip() + ")";
+			}
 			throw new MlflowException(response.statusCode(), code, "MLflow " + request.method() + " "
 					+ request.uri().getPath() + " failed with HTTP " + response.statusCode() + ": " + message);
 		}
@@ -245,9 +271,13 @@ public class MlflowClient {
 		final String user = System.getenv("MLFLOW_TRACKING_USERNAME");
 		final String password = System.getenv("MLFLOW_TRACKING_PASSWORD");
 		if (user != null && !user.isBlank() && password != null) {
-			return "Basic " + Base64.getEncoder()
-					.encodeToString((user + ":" + password).getBytes(StandardCharsets.UTF_8));
+			return basic(user.trim(), password);
 		}
 		return null;
+	}
+
+	private static String basic(String user, String password) {
+		return "Basic " + Base64.getEncoder().encodeToString(
+				(user + ":" + (password == null ? "" : password)).getBytes(StandardCharsets.UTF_8));
 	}
 }

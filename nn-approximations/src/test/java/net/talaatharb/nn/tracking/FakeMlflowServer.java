@@ -53,6 +53,8 @@ public final class FakeMlflowServer implements AutoCloseable {
 	public final List<String> requests = Collections.synchronizedList(new ArrayList<>());
 	public volatile int failMetricBatchesWithStatus;
 	public volatile String artifactUriScheme = "mlflow-artifacts:";
+	/** When set, every request must carry exactly this Authorization header (like {@code mlflow server --app-name basic-auth}). */
+	public volatile String requiredAuthorization;
 
 	public FakeMlflowServer() throws IOException {
 		server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
@@ -81,8 +83,15 @@ public final class FakeMlflowServer implements AutoCloseable {
 		requests.add(method + " " + path);
 		final byte[] body = exchange.getRequestBody().readAllBytes();
 		try {
-			if (method.equals("GET") && path.equals("/version")) {
+			final String required = requiredAuthorization;
+			if (required != null && !required.equals(exchange.getRequestHeaders().getFirst("Authorization"))) {
+				exchange.getResponseHeaders().add("WWW-Authenticate", "Basic realm=\"mlflow\"");
+				send(exchange, 401, "You are not authenticated. Please see the documentation for details.");
+			} else if (method.equals("GET") && path.equals("/version")) {
 				send(exchange, 200, "3.0.1");
+			} else if (path.equals("/api/2.0/mlflow/experiments/search")) {
+				json(exchange, Map.of("experiments", experiments.entrySet().stream().limit(1)
+						.map(entry -> Map.of("experiment_id", entry.getValue(), "name", entry.getKey())).toList()));
 			} else if (path.equals("/api/2.0/mlflow/experiments/get-by-name")) {
 				final String name = URLDecoder.decode(exchange.getRequestURI().getRawQuery()
 						.substring("experiment_name=".length()), StandardCharsets.UTF_8);

@@ -152,6 +152,18 @@ class VisualizationSmokeTest {
 			assertEquals("y = x^2", reloaded.name());
 			assertTrue(Files.size(onnx) > 100);
 			assertTrue(Files.readString(pmml).contains("<NeuralNetwork"));
+
+			final String shownJson = fx(() -> {
+				button(stage, "View JSON").fire();
+				final var viewer = javafx.stage.Window.getWindows().stream().filter(JsonViewer.class::isInstance)
+						.map(JsonViewer.class::cast).findFirst().orElseThrow();
+				final var area = (JsonCodeArea) viewer.getScene().getRoot().lookup(".json-area");
+				final String text = area.getText();
+				final boolean highlighted = area.getStyleSpans(0, area.getLength()).getSpanCount() > 10;
+				viewer.close();
+				return highlighted ? text : "not highlighted";
+			});
+			assertEquals(ModelJson.write(reloaded), shownJson);
 		} finally {
 			fx(() -> {
 				application.stop();

@@ -178,4 +178,48 @@ class MlflowTrackingTest {
 			System.clearProperty("nn.mlflow.settings");
 		}
 	}
+
+	@Test
+	void passwordIsSavedOnlyOnRequestAndNeverPrinted(@TempDir Path directory) throws Exception {
+		final Path file = directory.resolve("mlflow.json");
+		System.setProperty("nn.mlflow.settings", file.toString());
+		try {
+			final var session = new MlflowSettings(true, "https://mlflow.example", "e", " alice ", "s3cr3t", false);
+			assertEquals("alice", session.username());
+			assertFalse(session.toString().contains("s3cr3t"));
+			session.save();
+			assertFalse(Files.readString(file).contains("s3cr3t"));
+			assertEquals(session.withPassword(null), MlflowSettings.load());
+
+			final var remembered = new MlflowSettings(true, "https://mlflow.example", "e", "alice", "s3cr3t", true);
+			remembered.save();
+			assertEquals(remembered, MlflowSettings.load());
+
+			assertFalse(new MlflowSettings(true, "https://mlflow.example", "e", "  ", "x", true).hasCredentials());
+		} finally {
+			System.clearProperty("nn.mlflow.settings");
+		}
+	}
+
+	@Test
+	void sendsBasicCredentialsFromTheSettings() throws Exception {
+		server.requiredAuthorization = "Basic " + java.util.Base64.getEncoder()
+				.encodeToString("alice:p\u00e4ss:word".getBytes(java.nio.charset.StandardCharsets.UTF_8));
+		final var anonymous = new MlflowClient(server.uri(), java.net.http.HttpClient.newHttpClient(), null);
+		final var missing = assertThrows(MlflowClient.MlflowException.class, anonymous::checkAccess);
+		assertEquals(401, missing.status());
+		assertTrue(missing.getMessage().contains("requires a username and password"), missing.getMessage());
+
+		final var wrong = MlflowClient.connect(new MlflowSettings(true, server.uri().toString(), "e", "alice",
+				"nope", false));
+		assertTrue(assertThrows(MlflowClient.MlflowException.class, wrong::checkAccess).getMessage()
+				.contains("rejected"));
+
+		final var settings = new MlflowSettings(true, server.uri().toString(), "e", "alice", "p\u00e4ss:word", false);
+		final var signedIn = MlflowClient.connect(settings);
+		assertEquals("3.0.1", signedIn.version());
+		signedIn.checkAccess();
+		final var run = signedIn.createRun(signedIn.experimentId("e"), "r", 1, Map.of());
+		assertEquals("RUNNING", server.runs.get(run.runId()).status);
+	}
 }
