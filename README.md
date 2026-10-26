@@ -277,6 +277,63 @@ Classes above live under `net.talaatharb.nn.config`, `.algorithms`, and `.metric
 
 `InspectableNetwork` and `NetworkSnapshot` in `.visualization` form the extension boundary. The graph format does not require forward-only edges, so a future RBM adapter can expose visible/hidden units and bidirectional connections without rewriting the renderer. RBM sampling, reconstruction phases and contrastive-divergence training are **not implemented**; SGD remains specifically feed-forward.
 
+## Future plans
+
+The next models are planned in this order. Each step builds on the previous one. None of them is implemented yet.
+
+### 1. Autoencoder
+
+An autoencoder is a feed-forward network trained to reproduce its input through a narrow middle layer (the *bottleneck*). It reuses the existing layers, SGD and visualization, so it is the cheapest next step.
+
+- **Model.** A new task `reconstruction`, where the target is the input itself. For example, `784 → 64 → 16 → 64 → 784` on MNIST, or `4 → 2 → 4` on iris. The JSON format stays `feedForward`, and the dataset's targets are not used.
+- **Training.** The existing SGD with MSE between the input and the reconstruction. An optional *denoising* mode corrupts each input (Gaussian noise or masked pixels) and trains the network to restore the clean version.
+- **Visualization.**
+  - Each input is shown next to its reconstruction, with an error heatmap for images.
+  - A 2-D scatter of the bottleneck codes (bottleneck size 2, or the first two principal components), colored by class when labels exist.
+  - A *latent explorer*: drag a point in the code space and see the decoder's output.
+  - Interpolation between two samples through their codes.
+- **Export.** ONNX/PMML of the whole network as today, plus separate encoder and decoder ONNX files.
+- **Changes needed.** A way to mark the bottleneck layer, a `reconstruction` task in validation, MLflow metrics, and a reconstruction view (reusing the image view for image datasets).
+
+### 2. Restricted Boltzmann machine (RBM)
+
+An RBM is a two-layer *generative* model: visible units and hidden units, connected symmetrically, with no connections inside a layer. It is trained without labels by contrastive divergence. The project already prepares for it: `modelType` reserves room for other model kinds, and `NetworkSnapshot` connections are not required to point forward.
+
+- **Model.** `"modelType" : "rbm"` with `visible`, `hidden`, the unit types (Bernoulli, or Gaussian visible units for real-valued tables), the weight matrix and the visible and hidden biases. It can train on binarized MNIST or on logic truth tables.
+- **Training.** CD-k (k = 1 by default) or persistent CD, with learning rate, momentum, weight decay, mini-batch size and sparsity targets. Training is tracked by reconstruction error and pseudo-log-likelihood; MSE is not the training objective.
+- **Visualization.**
+  - Bidirectional edges in the network canvas.
+  - The CD phases step by step: the data-driven *positive* phase (v → h), the Gibbs chain (h → v' → h'), and the weight update as the difference between the two.
+  - Each hidden unit's weights drawn as an image filter.
+  - The probabilities next to the sampled 0/1 states.
+  - A free-running Gibbs sampler ("dreaming") that starts from noise or from a sample.
+  - Reconstructions next to the inputs.
+- **Use with the other models.** The hidden activations can feed a classifier (RBM features → logistic layer). Several RBMs stacked and pretrained can initialize a feed-forward network or the autoencoder, as in a deep belief network.
+- **Export.** ONNX for the deterministic visible → hidden probabilities (`MatMul`, `Add`, `Sigmoid`), and for the reconstruction. Sampling and PMML are not supported.
+- **Changes needed.** A new `ModelDefinition` subtype and editor form, an `InspectableNetwork` adapter for RBMs, a CD trainer with its own listener events (phase, Gibbs step), and MLflow parameters and metrics for those concepts.
+
+### 3. Convolutional neural network (CNN)
+
+A CNN uses small shared kernels instead of full connections. It is the most practical of the three for images, and is expected to bring MNIST from about 90% to about 99% test accuracy. It is also the largest change, because layers would work on height x width x channels instead of flat vectors.
+
+- **Model.** New layer kinds in `network.layers`: `conv2d` (filters, kernel size, stride, padding), `maxPool`/`avgPool`, `flatten` and `dropout`, followed by the existing dense layers. For example, `28x28x1 → conv 8@3x3 relu → maxPool 2 → conv 16@3x3 relu → maxPool 2 → dense 10`. A softmax output with cross-entropy loss would come with it, which also helps the existing classifiers.
+- **Training.** Backpropagation through convolution and pooling, mini-batches, and possibly momentum or Adam. Per-sample SGD in plain Java will be slow, so this needs efficient loops (im2col or vectorized arrays) and a background worker that trains more often than it takes snapshots.
+- **Visualization.**
+  - Feature maps per layer for the current image, as a grid of small heatmaps.
+  - The kernels themselves.
+  - The input pixels each output pixel depends on (its receptive field), traced back on hover.
+  - The pooling choices (which input won each max).
+  - Saliency or occlusion maps of the input pixels that drove a prediction.
+  - The confusion matrix and gallery as for MNIST today. The network canvas would show each layer as a stack of maps rather than individual neurons.
+- **Export.** ONNX `Conv`, `MaxPool`/`AveragePool` and `Flatten` (opset 13), checked against onnxruntime like the current exporter. PMML has no convolutions, so it is disabled for CNNs.
+- **Changes needed.** Shaped tensors in `NetworkSpec` and the snapshots, the new layers in the trainer and in validation (shape checks, a parameter limit), the editor and JSON for layer kinds, and a tiled feature-map view.
+
+### Shared groundwork
+
+- Generalize `TrainingUpdate` and the listener API to describe any model's update (not just per-layer deltas), so that the UI, MLflow logging and exports stay model-agnostic.
+- Mini-batch training and a softmax/cross-entropy option are useful for all three models, and for the existing classifiers.
+- Each new model kind gets fake-server tests and smoke-test coverage, like the current examples, and at least one built-in example (MNIST for all three; iris for the autoencoder).
+
 ## Build and checks
 
 The Maven setup targets Java 21, explicitly configures Lombok annotation processing (including newer JDK support), and uses the real desktop launcher rather than the template's nonexistent main class. Unused MapStruct/Mockito dependencies and the overwriting fat-JAR assembly were removed. JaCoCo reports are generated in `target/site/jacoco`; the previous template's blanket per-package coverage gate and unused mutation/static-analysis configuration are not part of the default build.
