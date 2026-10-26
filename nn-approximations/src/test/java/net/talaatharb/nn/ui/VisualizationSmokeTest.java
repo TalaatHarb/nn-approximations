@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.*;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.List;
 import java.util.concurrent.Callable;
 import java.util.concurrent.FutureTask;
 import java.util.concurrent.TimeUnit;
@@ -27,6 +28,8 @@ import net.talaatharb.nn.config.ActivationType;
 import net.talaatharb.nn.config.ExampleCatalog;
 import net.talaatharb.nn.config.ModelJson;
 import net.talaatharb.nn.config.NetworkSpec;
+import net.talaatharb.nn.tracking.FakeMlflowServer;
+import net.talaatharb.nn.tracking.MlflowSettings;
 
 /** Opt-in because a desktop display is required. */
 @EnabledIfSystemProperty(named = "javafx.smoke", matches = "true")
@@ -35,9 +38,14 @@ class VisualizationSmokeTest {
 	@TempDir
 	static Path models;
 
+	private static FakeMlflowServer mlflow;
+
 	@BeforeAll
 	static void startToolkit() throws Exception {
 		System.setProperty(ExampleCatalog.MODELS_DIR_PROPERTY, models.toString());
+		mlflow = new FakeMlflowServer();
+		System.setProperty("nn.mlflow.settings", models.resolve("settings/mlflow.json").toString());
+		new MlflowSettings(true, mlflow.uri().toString(), "smoke").save();
 		final var ready = new java.util.concurrent.CountDownLatch(1);
 		Platform.startup(ready::countDown);
 		assertTrue(ready.await(15, TimeUnit.SECONDS));
@@ -47,6 +55,8 @@ class VisualizationSmokeTest {
 	@AfterAll
 	static void stopToolkit() {
 		System.clearProperty(ExampleCatalog.MODELS_DIR_PROPERTY);
+		System.clearProperty("nn.mlflow.settings");
+		mlflow.close();
 		Platform.exit();
 	}
 
@@ -115,15 +125,33 @@ class VisualizationSmokeTest {
 			});
 			await(stage, () -> hasLabel(stage, "Target reached:"));
 			assertTrue(fx(() -> !button(stage, "Infer").isDisabled()));
+			await(stage, () -> hasLabel(stage, "Run logged") && mlflow.runs().size() == 3
+					&& mlflow.runs().stream().noneMatch(run -> run.status.equals("RUNNING")));
+			final var runs = mlflow.runs();
+			assertEquals(List.of("KILLED", "FINISHED", "FINISHED"), runs.stream().map(run -> run.status).toList());
+			assertEquals(List.of("xor", "xor", "square"), runs.stream().map(run -> run.params.get("model.id")).toList());
+			final var xorRun = runs.get(1);
+			assertEquals("1.0", xorRun.metrics("accuracy").get(0).path("value").asText());
+			assertFalse(xorRun.metrics("loss").isEmpty());
+			assertTrue(xorRun.params.get("weights.origin").startsWith("continued training from"));
+			assertTrue(runs.get(2).params.get("weights.origin").contains("seed"));
+			assertTrue(mlflow.artifacts.keySet().stream()
+					.anyMatch(path -> path.endsWith(runs.get(2).id + "/artifacts/model/model.onnx")));
 
 			final Path exported = models.resolve("export-check.out");
+			final Path onnx = models.resolve("export-check.onnx");
+			final Path pmml = models.resolve("export-check.pmml");
 			fx(() -> {
-				application.exportTo(exported, true);
+				application.exportTo(exported, NetworkVisualizationApplication.ExportFormat.WITH_WEIGHTS);
+				application.exportTo(onnx, NetworkVisualizationApplication.ExportFormat.ONNX);
+				application.exportTo(pmml, NetworkVisualizationApplication.ExportFormat.PMML);
 				return null;
 			});
 			final var reloaded = ModelJson.read(Files.readString(exported));
 			assertNotNull(reloaded.weights());
 			assertEquals("y = x^2", reloaded.name());
+			assertTrue(Files.size(onnx) > 100);
+			assertTrue(Files.readString(pmml).contains("<NeuralNetwork"));
 		} finally {
 			fx(() -> {
 				application.stop();

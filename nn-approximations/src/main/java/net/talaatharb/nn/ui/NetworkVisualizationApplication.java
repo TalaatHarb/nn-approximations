@@ -4,8 +4,10 @@ import java.io.IOException;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -13,6 +15,7 @@ import java.util.concurrent.atomic.AtomicReference;
 
 import javafx.animation.AnimationTimer;
 import javafx.application.Application;
+import javafx.application.Platform;
 import javafx.concurrent.Task;
 import javafx.geometry.Insets;
 import javafx.geometry.Pos;
@@ -25,10 +28,12 @@ import javafx.scene.control.Button;
 import javafx.scene.control.ButtonType;
 import javafx.scene.control.CheckBox;
 import javafx.scene.control.ComboBox;
+import javafx.scene.control.Hyperlink;
 import javafx.scene.control.Label;
 import javafx.scene.control.MenuButton;
 import javafx.scene.control.MenuItem;
 import javafx.scene.control.Separator;
+import javafx.scene.control.SeparatorMenuItem;
 import javafx.scene.control.Slider;
 import javafx.scene.control.SplitPane;
 import javafx.scene.control.TextArea;
@@ -48,12 +53,37 @@ import net.talaatharb.nn.config.ExampleCatalog;
 import net.talaatharb.nn.config.InitializationSpec;
 import net.talaatharb.nn.config.ModelDefinition;
 import net.talaatharb.nn.config.ModelJson;
+import net.talaatharb.nn.export.OnnxExporter;
+import net.talaatharb.nn.export.PmmlExporter;
 import net.talaatharb.nn.metrics.MeanSquareError;
 import net.talaatharb.nn.structures.FeedForwardNN;
 import net.talaatharb.nn.structures.TrainingData;
+import net.talaatharb.nn.tracking.MlflowClient;
+import net.talaatharb.nn.tracking.MlflowRunLogger;
+import net.talaatharb.nn.tracking.MlflowSettings;
+import net.talaatharb.nn.tracking.RunArtifacts;
 import net.talaatharb.nn.visualization.NetworkSnapshot;
 
 public class NetworkVisualizationApplication extends Application {
+
+	enum ExportFormat {
+		CONFIGURATION("Model configuration", "Model JSON", "json", ""),
+		WITH_WEIGHTS("Model with current weights", "Model JSON", "json", "-trained"),
+		ONNX("ONNX model (current weights)", "ONNX", "onnx", ""),
+		PMML("PMML neural network (current weights)", "PMML", "pmml", "");
+
+		private final String title;
+		private final String filter;
+		private final String extension;
+		private final String suffix;
+
+		ExportFormat(String title, String filter, String extension, String suffix) {
+			this.title = title;
+			this.filter = filter;
+			this.extension = extension;
+			this.suffix = suffix;
+		}
+	}
 
 	private static final int MAX_LOSS_POINTS = 800;
 	private static final long SURFACE_INTERVAL_NANOS = 120_000_000L;
@@ -83,6 +113,12 @@ public class NetworkVisualizationApplication extends Application {
 	private final Button reset = new Button("Reset to model");
 	private final Button storeWeights = new Button("Store weights in model");
 	private final Button clearWeights = new Button("Clear stored weights");
+	private final MenuItem pmmlExport = menuItem(ExportFormat.PMML.title + "…", () -> exportModel(ExportFormat.PMML));
+
+	private final CheckBox trackRuns = new CheckBox("Log runs to MLflow");
+	private final Button trackingSettings = new Button("MLflow settings…");
+	private final Label trackingStatus = new Label();
+	private final Hyperlink lastRun = new Hyperlink("Open last run");
 
 	private final TextField input = new TextField();
 	private final Button infer = new Button("Infer");
@@ -131,6 +167,11 @@ public class NetworkVisualizationApplication extends Application {
 	private int epochOffset;
 	private int lastEpoch;
 	private String progress = "";
+	private String weightOrigin = "";
+	private boolean continuedTraining;
+	private MlflowSettings tracking;
+	private MlflowRunLogger runLogger;
+	private String lastRunUrl;
 
 	private record EpochState(int epoch, float loss, List<float[]> predictions, OutputSurface.Grid grid) {
 	}
@@ -197,11 +238,32 @@ public class NetworkVisualizationApplication extends Application {
 		graph.detailProperty().addListener((observable, oldValue, value) -> detail
 				.setText(value.isEmpty() ? "Hover a neuron for its pre-activation, bias and strongest connections." : value));
 		detail.setText("Hover a neuron for its pre-activation, bias and strongest connections.");
-		export.getItems().addAll(menuItem("Model configuration…", () -> exportModel(false)),
-				menuItem("Model with current weights…", () -> exportModel(true)));
+		export.getItems().addAll(
+				menuItem(ExportFormat.CONFIGURATION.title + "…", () -> exportModel(ExportFormat.CONFIGURATION)),
+				menuItem(ExportFormat.WITH_WEIGHTS.title + "…", () -> exportModel(ExportFormat.WITH_WEIGHTS)),
+				new SeparatorMenuItem(),
+				menuItem(ExportFormat.ONNX.title + "…", () -> exportModel(ExportFormat.ONNX)), pmmlExport);
+		export.setOnShowing(event -> {
+			final var reason = PmmlExporter.unsupportedReason(model);
+			pmmlExport.setDisable(reason.isPresent());
+			pmmlExport.setText(ExportFormat.PMML.title + reason.map(text -> " - unavailable: " + text).orElse("…"));
+		});
+		tracking = MlflowSettings.load();
+		trackRuns.setSelected(tracking.enabled());
+		trackRuns.selectedProperty().addListener((observable, oldValue, value) -> {
+			if (value != tracking.enabled()) {
+				applyTracking(tracking.withEnabled(value));
+			}
+		});
+		trackingSettings.setOnAction(event -> new MlflowSettingsDialog(stage, tracking).showAndWait()
+				.ifPresent(this::applyTracking));
+		trackingStatus.setStyle("-fx-text-fill: #444;");
+		lastRun.setVisible(false);
+		lastRun.setOnAction(event -> getHostServices().showDocument(lastRunUrl));
+		showTrackingTarget();
 		lockedWhileTraining.addAll(List.of(models, newModel, edit, duplicate, delete, importModel, export, rate, epochs,
 				threshold, train, scheme, initMin, initMax, seed, randomize, reset, storeWeights, clearWeights, input,
-				infer, outputSelector));
+				infer, outputSelector, trackRuns, trackingSettings));
 	}
 
 	private static MenuItem menuItem(String text, Runnable action) {
@@ -224,7 +286,10 @@ public class NetworkVisualizationApplication extends Application {
 				speedLabel);
 		final var weightRow = row(new Label("Weights"), scheme, new Label("min"), initMin, new Label("max"), initMax,
 				new Label("seed"), seed, randomize, reset, storeWeights, clearWeights);
-		final var header = new VBox(8, modelRow, summary, trainingRow, weightRow, status);
+		final var trackingRow = row(trackRuns, trackingSettings, trackingStatus, lastRun);
+		trackingStatus.setMinWidth(0);
+		HBox.setHgrow(trackingStatus, Priority.SOMETIMES);
+		final var header = new VBox(8, modelRow, summary, trainingRow, weightRow, trackingRow, status);
 		header.setPadding(new Insets(10, 12, 6, 12));
 		return header;
 	}
@@ -493,21 +558,35 @@ public class NetworkVisualizationApplication extends Application {
 		}
 	}
 
-	private void exportModel(boolean withWeights) {
-		final var chooser = jsonChooser(withWeights ? "Export model with weights" : "Export model configuration");
-		chooser.setInitialFileName(models.getValue().id() + (withWeights ? "-trained" : "") + ".json");
+	private void exportModel(ExportFormat format) {
+		if (format == ExportFormat.PMML) {
+			final var reason = PmmlExporter.unsupportedReason(model);
+			if (reason.isPresent()) {
+				showError("PMML export unavailable", new IllegalArgumentException(reason.get()));
+				return;
+			}
+		}
+		final var chooser = new FileChooser();
+		chooser.setTitle("Export " + format.title.toLowerCase(Locale.ROOT));
+		chooser.getExtensionFilters().add(new FileChooser.ExtensionFilter(format.filter, "*." + format.extension));
+		chooser.setInitialFileName(models.getValue().id() + format.suffix + "." + format.extension);
 		final var file = chooser.showSaveDialog(stage);
 		if (file == null) {
 			return;
 		}
-		exportTo(file.toPath(), withWeights);
+		exportTo(file.toPath(), format);
 	}
 
-	void exportTo(Path path, boolean withWeights) {
+	void exportTo(Path path, ExportFormat format) {
 		try {
-			ModelJson.write(withWeights ? model.withWeights(network.copyWeights()) : model, path);
-			status.setText("Exported " + (withWeights ? "model and weights" : "model configuration") + " to " + path);
-		} catch (IOException exception) {
+			switch (format) {
+				case CONFIGURATION -> ModelJson.write(model, path);
+				case WITH_WEIGHTS -> ModelJson.write(model.withWeights(network.copyWeights()), path);
+				case ONNX -> OnnxExporter.write(model, network.copyWeights(), path);
+				case PMML -> PmmlExporter.write(model, network.copyWeights(), path);
+			}
+			status.setText("Exported " + format.title.toLowerCase(Locale.ROOT) + " to " + path);
+		} catch (IOException | IllegalArgumentException exception) {
 			showError("Could not export", exception);
 		}
 	}
@@ -522,6 +601,8 @@ public class NetworkVisualizationApplication extends Application {
 						? "random seed " + fallback : "model seed " + model.initialization().seed());
 		clearHistory();
 		afterWeightsChanged();
+		weightOrigin = origin;
+		continuedTraining = false;
 		status.setText("Network reset from " + origin + ". Train continues from the current weights.");
 	}
 
@@ -544,6 +625,9 @@ public class NetworkVisualizationApplication extends Application {
 		spec.initialize(network, used);
 		clearHistory();
 		afterWeightsChanged();
+		weightOrigin = spec.scheme() + (spec.scheme() == InitializationSpec.Scheme.UNIFORM
+				? " [" + min + ", " + max + ")" : "") + " initialization, seed " + used;
+		continuedTraining = false;
 		status.setText("Randomized with " + spec.scheme() + ", seed " + used
 				+ " (enter this seed to reproduce). Model definition unchanged.");
 	}
@@ -625,6 +709,10 @@ public class NetworkVisualizationApplication extends Application {
 		pause.setText(singleStep ? "Resume" : "Pause");
 		setActive(true);
 		status.setText(singleStep ? "Single update requested" : "Training");
+		final int stepOffset = epochOffset;
+		final MlflowRunLogger logger = tracking.enabled() ? startRun(learningRate, target, maxEpochs) : null;
+		runLogger = logger;
+		continuedTraining = true;
 		final var task = new Task<Float>() {
 			@Override
 			protected Float call() {
@@ -643,6 +731,9 @@ public class NetworkVisualizationApplication extends Application {
 
 					@Override
 					public void onEpoch(int epoch, float loss) {
+						if (logger != null) {
+							logger.logMetric("loss", loss, stepOffset + epoch);
+						}
 						OutputSurface.Grid grid = null;
 						final long now = System.nanoTime();
 						if (surfaces && now - lastSurface >= SURFACE_INTERVAL_NANOS) {
@@ -657,13 +748,13 @@ public class NetworkVisualizationApplication extends Application {
 			}
 		};
 		task.setOnSucceeded(event -> finish(String.format(Locale.ROOT, "%s: MSE %.6f",
-				task.getValue() <= target ? "Target reached" : "Epoch limit reached", task.getValue())));
+				task.getValue() <= target ? "Target reached" : "Epoch limit reached", task.getValue()), "FINISHED"));
 		task.setOnFailed(event -> {
 			final var error = task.getException();
 			if (error instanceof CancellationException) {
-				finish("Stopped; completed weight updates retained");
+				finish("Stopped; completed weight updates retained", "KILLED");
 			} else {
-				finish("Training failed");
+				finish("Training failed", "FAILED");
 				showError("Training failed", error);
 			}
 		});
@@ -702,13 +793,125 @@ public class NetworkVisualizationApplication extends Application {
 		status.setText("Stopping...");
 	}
 
-	private void finish(String message) {
+	private void finish(String message, String runStatus) {
 		flushUpdates();
 		worker = null;
 		setActive(false);
 		lastGrid = computeGrid();
-		updatePredictions(predict(), lastGrid);
+		final var finalPredictions = predict();
+		updatePredictions(finalPredictions, lastGrid);
 		status.setText(message);
+		endRun(runStatus, message, finalPredictions);
+	}
+
+	// ---------------------------------------------------------------- MLflow tracking
+
+	private void applyTracking(MlflowSettings settings) {
+		tracking = settings;
+		trackRuns.setSelected(settings.enabled());
+		try {
+			settings.save();
+		} catch (IOException exception) {
+			status.setText("Could not save MLflow settings: " + exception.getMessage());
+		}
+		showTrackingTarget();
+	}
+
+	private void showTrackingTarget() {
+		trackingStatus.setText(tracking.enabled()
+				? "to " + tracking.trackingUri() + ", experiment \"" + tracking.experimentName() + "\""
+				: "off");
+	}
+
+	/** Called on the FX thread before the worker starts, so reading UI state and the network is safe. */
+	private MlflowRunLogger startRun(float learningRate, float target, int maxEpochs) {
+		final var errors = tracking.validate();
+		if (!errors.isEmpty()) {
+			trackingStatus.setText("Not logging: " + String.join("; ", errors));
+			return null;
+		}
+		final var params = new LinkedHashMap<String, String>();
+		params.put("model.id", models.getValue().id());
+		params.put("model.name", model.name());
+		params.put("model.task", model.task().name().toLowerCase(Locale.ROOT));
+		params.put("network.shape", model.network().describe());
+		params.put("network.activations", String.join(", ",
+				model.network().layers().stream().map(layer -> layer.activation().toString()).toList()));
+		params.put("network.parameters", Integer.toString(model.network().parameterCount()));
+		params.put("training.learning_rate", Float.toString(learningRate));
+		params.put("training.max_epochs", Integer.toString(maxEpochs));
+		params.put("training.target_mse", Float.toString(target));
+		params.put("training.shuffle_seed",
+				model.training().shuffleSeed() == null ? "random" : model.training().shuffleSeed().toString());
+		params.put("training.start_epoch", Integer.toString(epochOffset));
+		params.put("weights.origin", (continuedTraining ? "continued training from " : "") + weightOrigin);
+		params.put("dataset.type", model.dataset() instanceof net.talaatharb.nn.config.FunctionDataset
+				? "function" : "table");
+		params.put("dataset.samples", Integer.toString(data.getInput().length));
+		params.put("dataset.inputs", String.join(", ", model.dataset().inputNames()));
+		params.put("dataset.outputs", String.join(", ", model.dataset().outputNames()));
+		final var tags = new LinkedHashMap<String, String>();
+		tags.put("mlflow.source.name", "nn-approximations");
+		tags.put("mlflow.source.type", "LOCAL");
+		tags.put("mlflow.user", System.getProperty("user.name", "unknown"));
+		tags.put("nn.model_id", models.getValue().id());
+		if (!model.description().isBlank()) {
+			tags.put("mlflow.note.content", model.description());
+		}
+		final String runName = model.name() + " " + java.time.LocalDateTime.now()
+				.format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"));
+		trackingStatus.setText("Logging run \"" + runName + "\" to " + tracking.trackingUri());
+		return MlflowRunLogger.start(new MlflowClient(tracking.uri()),
+				new MlflowRunLogger.RunRequest(tracking.experimentName(), runName, params, tags),
+				problem -> Platform.runLater(() -> trackingStatus.setText(problem)));
+	}
+
+	/** Runs on the FX thread after the worker exited, so the network can be exported safely. */
+	private void endRun(String runStatus, String outcome, List<float[]> finalPredictions) {
+		final var logger = runLogger;
+		runLogger = null;
+		if (logger == null) {
+			return;
+		}
+		final var metrics = new LinkedHashMap<String, Double>();
+		metrics.put("epochs_trained", (double) (lastEpoch - epochOffset));
+		if (!lossHistory.isEmpty() && lastEpoch > epochOffset) {
+			metrics.put("final_loss", (double) lossHistory.get(lossHistory.size() - 1)[1]);
+		}
+		if (model.isClassification()) {
+			metrics.put("accuracy", accuracy(finalPredictions));
+		}
+		final var warnings = new ArrayList<String>();
+		final var artifacts = RunArtifacts.build(model, network.copyWeights(), warnings);
+		trackingStatus.setText("Uploading run results to " + tracking.trackingUri() + "...");
+		logger.finish(new MlflowRunLogger.Outcome(runStatus, metrics, Map.of("outcome", outcome), artifacts))
+				.whenComplete((result, error) -> Platform.runLater(() -> {
+					if (error != null) {
+						final var cause = error.getCause() != null ? error.getCause() : error;
+						trackingStatus.setText("MLflow run not completed: " + cause.getMessage());
+						return;
+					}
+					warnings.addAll(result.warnings());
+					lastRunUrl = result.runUrl();
+					lastRun.setVisible(true);
+					trackingStatus.setText("Run logged" + (warnings.isEmpty() ? ""
+							: " with warnings: " + String.join("; ", warnings)));
+				}));
+	}
+
+	private double accuracy(List<float[]> predicted) {
+		final float[][] expected = data.getOutput();
+		int correct = 0;
+		int total = 0;
+		for (int sample = 0; sample < expected.length; sample++) {
+			for (int o = 0; o < expected[sample].length; o++) {
+				total++;
+				if (predicted.get(sample)[o] >= 0.5f == expected[sample][o] >= 0.5f) {
+					correct++;
+				}
+			}
+		}
+		return total == 0 ? 0 : (double) correct / total;
 	}
 
 	private void setActive(boolean value) {
@@ -921,5 +1124,16 @@ public class NetworkVisualizationApplication extends Application {
 			timer.stop();
 		}
 		requestStop();
+		final var logger = runLogger;
+		runLogger = null;
+		if (logger != null) {
+			try {
+				logger.finish(new MlflowRunLogger.Outcome("KILLED", Map.of(),
+						Map.of("outcome", "Application closed during training"), List.of()))
+						.get(5, java.util.concurrent.TimeUnit.SECONDS);
+			} catch (Exception ignored) {
+				// Best effort: the application is exiting.
+			}
+		}
 	}
 }
