@@ -11,7 +11,34 @@ mvn clean verify
 mvn javafx:run
 ```
 
-JavaFX dependencies and platform-native libraries are resolved by Maven; no separate JavaFX SDK is needed. A graphical desktop is required to run the viewer, but not for the normal test suite. The packaged JAR is not a standalone distribution: launch with `javafx:run`, which supplies the JavaFX runtime.
+JavaFX dependencies and platform-native libraries are resolved by Maven; no separate JavaFX SDK is needed. A graphical desktop is required to run the viewer, but not for the normal test suite. The default Maven JAR does not include dependencies: launch with `javafx:run`, or use a release distribution below.
+
+### Downloads and releases
+
+GitHub Releases provide:
+
+- **Windows x64 portable ZIP:** extract the entire archive and run `NeuralNetworkVisualizer/NeuralNetworkVisualizer.exe`. Java is bundled; no installation or separate JDK is needed. Keep the executable alongside its `app` and `runtime` directories. The executable is unsigned, so Windows may display a SmartScreen warning.
+- **Runnable JARs:** Windows x64, Linux x64 and macOS arm64 (Apple Silicon). Install Java 21+ matching the artifact's architecture, then run `java -jar nn-approximations-<version>-<platform>.jar`. Each JAR includes dependencies and its platform's JavaFX native libraries; it is not interchangeable across platforms. Linux also needs GTK 3 and a graphical session. Intel macOS binaries are not currently published.
+- **SHA256SUMS.txt:** checksums for the downloads.
+
+The **Build and verify** workflow runs `clean verify` and desktop smoke tests on all three platforms for branch pushes and pull requests. Linux uses Xvfb with a virtual 1920x1080 display for the JavaFX tests; Windows and macOS use their hosted desktop sessions. All test jobs select software rendering (`-Dprism.order=sw`), so no GPU is required. Monocle and TestFX are not used. Test and coverage reports are uploaded as workflow artifacts; tests use local fake Hugging Face and MLflow servers, not production services.
+
+To release, push a version tag such as `v1.2.3` or `v1.2.3-rc.1`. The **Release** workflow builds with JDK 21, uses the tag version in Maven artifacts, and runs the same tests before packaging. It also launches the Windows app image and checks for a responsive window. Only after all platform builds succeed does one job publish the release and checksums. Tags with a prerelease suffix are marked as prereleases on GitHub.
+
+To build a runnable JAR locally for the current platform:
+
+```powershell
+mvn -B -f nn-approximations\pom.xml -Prelease "-Drevision=1.2.3" clean verify "-Djavafx.smoke=true"
+java -jar nn-approximations\target\nn-approximations-1.2.3-all.jar
+```
+
+On Windows, with JDK 21+ (including `jpackage`) on `PATH`, create the portable ZIP after that build:
+
+```powershell
+.\.github\scripts\package-windows.ps1 -Version 1.2.3
+```
+
+The release profile attaches an `-all.jar` without replacing the normal library JAR. The portable ZIP is written under `nn-approximations/target/`.
 
 ## Models and examples
 

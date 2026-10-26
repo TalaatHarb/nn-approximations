@@ -1,0 +1,106 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            platform: Linux-x64
+          - os: windows-2022
+            platform: Windows-x64
+          - os: macos-14
+            platform: macOS-arm64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: temurin
+          cache: maven
+          cache-dependency-path: nn-approximations/pom.xml
+      - name: Validate tag
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          if [[ ! "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]; then
+            echo "Expected a tag such as v1.2.3 or v1.2.3-rc.1" >&2
+            exit 1
+          fi
+          echo "VERSION=${RELEASE_TAG#v}" >> "$GITHUB_ENV"
+      - name: Build and verify release (Linux)
+        if: runner.os == 'Linux'
+        run: xvfb-run -a --server-args="-screen 0 1920x1080x24" mvn -B -ntp -f nn-approximations/pom.xml -Prelease "-Drevision=$VERSION" clean verify -Djavafx.smoke=true -Dprism.order=sw
+      - name: Build and verify release (Windows/macOS)
+        if: runner.os != 'Linux'
+        shell: bash
+        run: mvn -B -ntp -f nn-approximations/pom.xml -Prelease "-Drevision=$VERSION" clean verify -Djavafx.smoke=true -Dprism.order=sw
+      - name: Package and launch portable Windows application
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: .\.github\scripts\package-windows.ps1 -Version $env:VERSION
+      - name: Stage release files
+        shell: bash
+        env:
+          PLATFORM: ${{ matrix.platform }}
+        run: |
+          mkdir -p dist
+          cp "nn-approximations/target/nn-approximations-$VERSION-all.jar" "dist/nn-approximations-$VERSION-$PLATFORM.jar"
+          if [[ "$RUNNER_OS" == Windows ]]; then
+            cp "nn-approximations/target/nn-approximations-$VERSION-Windows-x64-portable.zip" dist/
+          fi
+          cp LICENSE dist/LICENSE.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: packages-${{ matrix.platform }}
+          path: dist/
+          if-no-files-found: error
+      - name: Upload test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-reports-${{ matrix.platform }}
+          path: nn-approximations/target/surefire-reports/
+          if-no-files-found: warn
+
+  publish:
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: packages-*
+          path: artifacts
+      - name: Publish all platforms together
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        shell: bash
+        run: |
+          mkdir dist
+          find artifacts -type f \( -name '*.jar' -o -name '*-portable.zip' \) -exec cp {} dist/ \;
+          cp artifacts/packages-Linux-x64/LICENSE.txt dist/
+          (cd dist && sha256sum *.jar *.zip LICENSE.txt > SHA256SUMS.txt)
+          prerelease=()
+          if [[ "$RELEASE_TAG" == *-* ]]; then prerelease=(--prerelease); fi
+          gh release create "$RELEASE_TAG" dist/* \
+            --verify-tag --title "Release $RELEASE_TAG" --generate-notes "${prerelease[@]}" \
+            --notes "Windows: extract the entire portable ZIP and run NeuralNetworkVisualizer.exe (Java included). JARs require Java 21+ and a graphical desktop; use the OS/architecture shown in the filename and run java -jar <file>.jar. Linux may need GTK 3 installed. SHA256SUMS.txt contains download checksums."
