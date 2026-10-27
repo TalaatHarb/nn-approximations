@@ -367,7 +367,8 @@ public class NetworkVisualizationApplication extends Application {
 		final var all = new Button("All layers");
 		all.setOnAction(event -> layer.setValue(layer.getMax()));
 		final var legend = new Label("Blue = positive, red = negative. Edge width/opacity relative to the largest shown;"
-				+ " node fill = activation, ring = bias.");
+				+ " node fill = activation, ring = bias. Small-layer arrows: green ↑ weight increased,"
+				+ " red ↓ decreased (last update).");
 		legend.setWrapText(true);
 		legend.setStyle("-fx-text-fill: #555;");
 		final var graphPane = new VBox(8, graph, detail, legend,

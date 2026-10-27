@@ -213,6 +213,63 @@ public class NetworkCanvas extends Region {
 		return showsChanges() ? weight - previous.connections().get(index).weight() : weight;
 	}
 
+	static float visibleWeightChange(NetworkSnapshot current, NetworkSnapshot previous, int index, int reveal) {
+		if (previous == null || current.connections().size() != previous.connections().size()
+				|| current.layers().size() != previous.layers().size()) {
+			return 0;
+		}
+		final var edge = current.connections().get(index);
+		final var old = previous.connections().get(index);
+		if (edge.sourceLayer() != old.sourceLayer() || edge.sourceUnit() != old.sourceUnit()
+				|| edge.targetLayer() != old.targetLayer() || edge.targetUnit() != old.targetUnit()
+				|| edge.sourceLayer() > reveal || edge.targetLayer() > reveal) {
+			return 0;
+		}
+		final int sources = current.layers().get(edge.sourceLayer()).units().size();
+		final int targets = current.layers().get(edge.targetLayer()).units().size();
+		if (sources > 6 || targets > 6 || sources * targets > 24
+				|| sources != previous.layers().get(edge.sourceLayer()).units().size()
+				|| targets != previous.layers().get(edge.targetLayer()).units().size()) {
+			return 0;
+		}
+		final float delta = edge.weight() - old.weight();
+		final double threshold = Math.max(1e-7, 1e-5 * Math.max(Math.abs(edge.weight()), Math.abs(old.weight())));
+		return Float.isFinite(delta) && Math.abs(delta) > threshold ? delta : 0;
+	}
+
+	private void drawWeightChange(GraphicsContext g, int index, double radius) {
+		final float delta = visibleWeightChange(current, previous, index, revealLayer);
+		if (delta == 0) {
+			return;
+		}
+		final var edge = current.connections().get(index);
+		final double x1 = columnX(edge.sourceLayer());
+		final double x2 = columnX(edge.targetLayer());
+		final int sources = current.layers().get(edge.sourceLayer()).units().size();
+		final int targets = current.layers().get(edge.targetLayer()).units().size();
+		final double rowSpacing = (canvas.getHeight() - MARGIN_TOP - MARGIN_BOTTOM) / Math.max(sources, targets);
+		if (Math.abs(x2 - x1) < Math.max(90, radius * 5) || rowSpacing < 28) {
+			return;
+		}
+		// Stagger markers by destination to avoid piling them up at crossing midpoints.
+		final double fraction = 0.32 + 0.3 * (edge.targetUnit() + 0.5) / targets;
+		final double x = x1 + (x2 - x1) * fraction;
+		final double y1 = rowY(edge.sourceLayer(), edge.sourceUnit());
+		final double y = y1 + (rowY(edge.targetLayer(), edge.targetUnit()) - y1) * fraction;
+		final double direction = delta > 0 ? -1 : 1;
+		final double tip = y + direction * 5;
+		g.setStroke(Color.rgb(255, 255, 255, 0.85));
+		g.setLineWidth(4);
+		g.strokeLine(x, y - direction * 5, x, tip);
+		g.strokeLine(x - 3, tip - direction * 3, x, tip);
+		g.strokeLine(x + 3, tip - direction * 3, x, tip);
+		g.setStroke(delta > 0 ? Color.rgb(46, 125, 50, 0.8) : Color.rgb(198, 40, 40, 0.8));
+		g.setLineWidth(1.4);
+		g.strokeLine(x, y - direction * 5, x, tip);
+		g.strokeLine(x - 3, tip - direction * 3, x, tip);
+		g.strokeLine(x + 3, tip - direction * 3, x, tip);
+	}
+
 	private void draw() {
 		final GraphicsContext g = canvas.getGraphicsContext2D();
 		g.setFill(Color.WHITE);
@@ -257,6 +314,12 @@ public class NetworkCanvas extends Region {
 				g.setLineWidth(revealed ? 0.4 + 4.6 * strength : 0.5);
 				g.strokeLine(columnX(c.sourceLayer()), rowY(c.sourceLayer(), c.sourceUnit()),
 						columnX(c.targetLayer()), rowY(c.targetLayer(), c.targetUnit()));
+			}
+		}
+		for (int i = 0; i < connections.size(); i++) {
+			final var edge = connections.get(i);
+			if ((!pictures || edge.sourceLayer() > 0) && (!hovering || touchesHover(edge))) {
+				drawWeightChange(g, i, r);
 			}
 		}
 		final float biasMax = maxBias();

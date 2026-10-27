@@ -1,6 +1,38 @@
 # nn-approximations
 Building a project for building neural network approximations for mathematical functions and visualizing the process of training and inference
 
+## Screenshots
+
+### Logic classification: XOR
+
+A small network with weight-change arrows, a decision-boundary heatmap and predictions for the truth table.
+
+![XOR classification with weight-change arrows and a decision-boundary heatmap](img/classification_small_example_xor.PNG)
+
+### Function regression: sine
+
+A customized multilayer network approximating a sine wave, with training loss and target-versus-prediction curves.
+
+![Sine regression with hidden-layer activations, weight changes and prediction curves](img/regression_sin.PNG)
+
+### Image classification: MNIST
+
+Handwritten digit recognition with class scores, a test confusion matrix and an interactive sample gallery.
+
+![MNIST digit classification with image input, class scores, confusion matrix and gallery](img/classification_image.PNG)
+
+### Tabular classification: iris
+
+Flower measurements mapped to species, with training and test accuracy and per-row predictions.
+
+![Iris species classification with training loss, class predictions and held-out accuracy](img/classification_big_example_iris.PNG)
+
+### Tabular regression: California housing
+
+Eight census-block features predict median house values, with raw-unit metrics and predictions sorted by target.
+
+![California housing regression with training loss, target-versus-prediction chart and results table](img/regression_big.PNG)
+
 ## Run the desktop application
 
 Install JDK 21 or newer and Maven 3.9+, then run from the repository root:
@@ -77,7 +109,7 @@ Every example is a JSON **model definition**. Eleven built-ins ship as resources
 
 - **Train** continues from the current weights; **Pause / Resume**, **Single update** and **Stop** control training. Single update also starts a paused session. The delay slider sets milliseconds per update; use zero to converge quickly. Rate, epochs and target MSE default to the model's training settings.
 - **Weights** row: pick a scheme, range and seed, then **Randomize**. A blank seed draws a new one each time and the status line reports it so the result can be reproduced. **Reset to model** rebuilds from the model's stored weights or initialization. **Store weights in model** saves the current weights into the model file; **Clear stored weights** removes them.
-- The network canvas scales to any layer size. Edge width and opacity are relative to the largest value shown. Blue is positive and red is negative; the node fill shows activation and the ring shows bias. Switch **Edges** to *Last update change* to see where SGD moved weights. Hover a neuron to highlight its connections and list z, bias, deltas and its strongest incoming/outgoing weights.
+- The network canvas scales to any layer size. Edge width and opacity are relative to the largest value shown. Blue is positive and red is negative; the node fill shows activation and the ring shows bias. Switch **Edges** to *Last update change* to see where SGD moved weights. Small green up-arrows and red down-arrows show weight increases/decreases in either edge mode when the displayed snapshot has last-update data. Markers are limited to layer pairs with at most six units each and 24 possible connections, with enough drawing space; hidden layers, unchanged/negligible weights and dense image-input connections are not marked. Viewing the before-update state or running standalone inference hides the markers. Hover a neuron to highlight its connections and list z, bias, deltas and its strongest incoming/outgoing weights.
 - Use the layer slider or **Next layer** to reveal hidden activations of one inference progressively. When idle, enter comma-separated inputs and click **Infer**.
 - The loss chart shows dataset MSE per epoch, optionally on a log10 scale. Long runs are downsampled, so the full history stays visible.
 - Single-input models plot target vs. prediction. Two-input models show a live heatmap of the selected output over the input plane with training points overlaid and, for classification, the 0.5 decision boundary. Other input counts plot by sample index. The table lists all inputs, targets and outputs; classification tasks also show the class at 0.5. The charts and results panel scrolls vertically when the window is too short to show it all.

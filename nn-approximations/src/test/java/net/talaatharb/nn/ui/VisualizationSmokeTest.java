@@ -22,6 +22,7 @@ import javafx.scene.control.ComboBox;
 import javafx.scene.control.Label;
 import javafx.scene.control.Slider;
 import javafx.scene.control.TextField;
+import javafx.scene.image.WritableImage;
 import javafx.stage.Stage;
 import net.talaatharb.nn.config.ActivationSpec;
 import net.talaatharb.nn.config.ActivationType;
@@ -33,6 +34,7 @@ import net.talaatharb.nn.data.DatasetCache;
 import net.talaatharb.nn.data.FakeHuggingFaceServer;
 import net.talaatharb.nn.tracking.FakeMlflowServer;
 import net.talaatharb.nn.tracking.MlflowSettings;
+import net.talaatharb.nn.visualization.NetworkSnapshot;
 
 /** Opt-in because a desktop display is required. */
 @EnabledIfSystemProperty(named = "javafx.smoke", matches = "true")
@@ -398,6 +400,49 @@ class VisualizationSmokeTest {
 			}
 			Thread.sleep(50);
 		}
+	}
+
+	@Test
+	void weightChangeArrowsRenderOnlyWithUpdateData() throws Exception {
+		fx(() -> {
+			final var unit = new NetworkSnapshot.Unit(0, 0, 0);
+			final var layers = List.of(
+					new NetworkSnapshot.Layer("input", List.of(unit)),
+					new NetworkSnapshot.Layer("output", List.of(unit, unit)));
+			final var current = new NetworkSnapshot("test", layers, List.of(
+					new NetworkSnapshot.Connection(0, 0, 1, 0, 1f),
+					new NetworkSnapshot.Connection(0, 0, 1, 1, 1f)));
+			final var previous = new NetworkSnapshot("test", layers, List.of(
+					new NetworkSnapshot.Connection(0, 0, 1, 0, 0.75f),
+					new NetworkSnapshot.Connection(0, 0, 1, 1, 1.25f)));
+			final var canvas = new NetworkCanvas();
+			canvas.resize(640, 460);
+			canvas.layout();
+			canvas.show(current, previous, 1, List.of(), List.of());
+			final var marked = canvas.snapshot(null, null);
+			assertTrue(arrowPixels(marked, true) > 0, "increases have green markers");
+			assertTrue(arrowPixels(marked, false) > 0, "decreases have red markers");
+			canvas.show(current, null, 1, List.of(), List.of());
+			final var inference = canvas.snapshot(null, null);
+			assertEquals(0, arrowPixels(inference, true), "inference has no update markers");
+			assertEquals(0, arrowPixels(inference, false));
+			return null;
+		});
+	}
+
+	private static int arrowPixels(WritableImage image, boolean green) {
+		int count = 0;
+		final var pixels = image.getPixelReader();
+		for (int y = 44; y < image.getHeight() - 22; y++) {
+			for (int x = 150; x < image.getWidth() - 150; x++) {
+				final var color = pixels.getColor(x, y);
+				if (green ? color.getGreen() > color.getRed() + 0.1 && color.getGreen() > color.getBlue() + 0.1
+						: color.getRed() > color.getGreen() + 0.1 && color.getRed() > color.getBlue() + 0.1) {
+					count++;
+				}
+			}
+		}
+		return count;
 	}
 
 	@Test
